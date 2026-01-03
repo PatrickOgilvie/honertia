@@ -1,0 +1,149 @@
+/**
+ * Honertia Helpers
+ */
+
+import type { Context } from 'hono'
+import type { PageObject } from './types.js'
+
+export interface PageProps {
+  errors?: Record<string, string>
+}
+
+export interface TemplateOptions {
+  title?: string
+  scripts?: string[]
+  styles?: string[]
+  head?: string
+  rootId?: string
+}
+
+/**
+ * Creates a template renderer function.
+ * 
+ * Can accept either static options or a function that receives context
+ * for environment-aware configuration.
+ * 
+ * @example Static config
+ * ```ts
+ * createTemplate({ title: 'App', scripts: ['/main.js'] })
+ * ```
+ * 
+ * @example Dynamic config based on environment
+ * ```ts
+ * createTemplate((ctx) => ({
+ *   title: 'App',
+ *   scripts: ctx.env.ENVIRONMENT === 'production' 
+ *     ? ['/assets/main.js']
+ *     : ['http://localhost:5173/src/main.tsx'],
+ * }))
+ * ```
+ */
+export function createTemplate(
+  options: TemplateOptions | ((ctx: Context) => TemplateOptions)
+): (page: PageObject, ctx?: Context) => string {
+  return (page: PageObject, ctx?: Context) => {
+    // If options is a function but no context provided, throw helpful error
+    if (typeof options === 'function' && !ctx) {
+      throw new Error('createTemplate: context required when using dynamic options function')
+    }
+    const resolvedOptions = typeof options === 'function' ? options(ctx!) : options
+    
+    const {
+      title = 'App',
+      scripts = [],
+      styles = [],
+      head = '',
+      rootId = 'app',
+    } = resolvedOptions
+
+    const scriptTags = scripts
+      .map(src => `<script type="module" src="${escapeHtml(src)}"></script>`)
+      .join('\n    ')
+
+    const styleTags = styles
+      .map(href => `<link rel="stylesheet" href="${escapeHtml(href)}">`)
+      .join('\n    ')
+
+    const pageJson = JSON.stringify(page)
+      .replace(/</g, '\\u003c')
+      .replace(/>/g, '\\u003e')
+      .replace(/&/g, '\\u0026')
+      .replace(/'/g, '\\u0027')
+
+    return `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>${escapeHtml(title)}</title>
+    ${styleTags}
+    ${head}
+  </head>
+  <body>
+    <div id="${escapeHtml(rootId)}" data-page='${pageJson}'></div>
+    ${scriptTags}
+  </body>
+</html>`
+  }
+}
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+export function createVersion(manifest: Record<string, string>): string {
+  const combined = Object.values(manifest).sort().join('')
+  let hash = 0
+  for (let i = 0; i < combined.length; i++) {
+    const char = combined.charCodeAt(i)
+    hash = ((hash << 5) - hash) + char
+    hash = hash & hash
+  }
+  return Math.abs(hash).toString(36)
+}
+
+/**
+ * Vite development configuration helpers.
+ */
+export const vite = {
+  /**
+   * Returns the HMR (Hot Module Replacement) head scripts for Vite dev server.
+   * 
+   * @param port - Vite dev server port (default: 5173)
+   * @example
+   * ```ts
+   * head: isProd ? '' : vite.hmrHead()
+   * ```
+   */
+  hmrHead(port = 5173): string {
+    return `
+      <script type="module">
+        import RefreshRuntime from 'http://localhost:${port}/@react-refresh'
+        RefreshRuntime.injectIntoGlobalHook(window)
+        window.$RefreshReg$ = () => {}
+        window.$RefreshSig$ = () => (type) => type
+        window.__vite_plugin_react_preamble_installed__ = true
+      </script>
+      <script type="module" src="http://localhost:${port}/@vite/client"></script>
+    `
+  },
+
+  /**
+   * Returns the main entry script URL for Vite dev server.
+   * 
+   * @param entry - Entry file path (default: '/src/main.tsx')
+   * @param port - Vite dev server port (default: 5173)
+   * @example
+   * ```ts
+   * scripts: isProd ? ['/assets/main.js'] : [vite.script()]
+   * ```
+   */
+  script(entry = '/src/main.tsx', port = 5173): string {
+    return `http://localhost:${port}${entry}`
+  },
+}

@@ -1,0 +1,183 @@
+/**
+ * Hono-Effect Bridge
+ *
+ * Middleware that connects Hono's request handling to Effect's runtime.
+ */
+
+import { Effect, Layer, ManagedRuntime, Context } from 'effect'
+import type { Context as HonoContext, MiddlewareHandler, Env } from 'hono'
+import {
+  DatabaseService,
+  AuthService,
+  AuthUserService,
+  HonertiaService,
+  RequestService,
+  ResponseFactoryService,
+  type AuthUser,
+  type RequestContext,
+  type ResponseFactory,
+  type HonertiaRenderer,
+} from './services.js'
+
+/**
+ * Configuration for the Effect bridge.
+ */
+export interface EffectBridgeConfig<E extends Env> {
+  database?: (c: HonoContext<E>) => unknown
+}
+
+/**
+ * Symbol for storing Effect runtime in Hono context.
+ */
+const EFFECT_RUNTIME = Symbol('effectRuntime')
+
+/**
+ * Extend Hono context with Effect runtime.
+ */
+declare module 'hono' {
+  interface ContextVariableMap {
+    [EFFECT_RUNTIME]?: ManagedRuntime.ManagedRuntime<
+      | DatabaseService
+      | AuthService
+      | AuthUserService
+      | HonertiaService
+      | RequestService
+      | ResponseFactoryService,
+      never
+    >
+  }
+}
+
+/**
+ * Create a RequestContext from Hono context.
+ */
+function createRequestContext<E extends Env>(c: HonoContext<E>): RequestContext {
+  return {
+    method: c.req.method,
+    url: c.req.url,
+    headers: c.req.raw.headers,
+    param: (name: string) => c.req.param(name),
+    params: () => {
+      const params = c.req.param()
+      return typeof params === 'string' ? {} : params
+    },
+    query: () => c.req.query(),
+    json: <T>() => c.req.json<T>(),
+    parseBody: () => c.req.parseBody() as Promise<Record<string, unknown>>,
+    header: (name: string) => c.req.header(name),
+  }
+}
+
+/**
+ * Create a ResponseFactory from Hono context.
+ */
+function createResponseFactory<E extends Env>(c: HonoContext<E>): ResponseFactory {
+  return {
+    redirect: (url: string, status = 302) => c.redirect(url, status as 301 | 302 | 303 | 307 | 308),
+    json: <T>(data: T, status = 200) => c.json(data, status as any),
+    text: (data: string, status = 200) => c.text(data, status as any),
+    notFound: () => c.notFound(),
+  }
+}
+
+/**
+ * Create a HonertiaRenderer from Hono context.
+ */
+function createHonertiaRenderer<E extends Env>(c: HonoContext<E>): HonertiaRenderer {
+  const honertia = (c as any).var?.honertia
+  if (!honertia) {
+    return {
+      render: async () => c.text('Honertia not configured', 500),
+      share: () => {},
+      setErrors: () => {},
+    }
+  }
+  return {
+    render: (component, props) => honertia.render(component, props),
+    share: (key, value) => honertia.share(key, value),
+    setErrors: (errors) => honertia.setErrors(errors),
+  }
+}
+
+/**
+ * Build the Effect layer from Hono context.
+ */
+export function buildContextLayer<E extends Env>(
+  c: HonoContext<E>,
+  config?: EffectBridgeConfig<E>
+): Layer.Layer<
+  | RequestService
+  | ResponseFactoryService
+  | HonertiaService
+  | DatabaseService
+  | AuthService
+  | AuthUserService,
+  never,
+  never
+> {
+  const requestLayer = Layer.succeed(RequestService, createRequestContext(c))
+  const responseLayer = Layer.succeed(ResponseFactoryService, createResponseFactory(c))
+  const honertiaLayer = Layer.succeed(HonertiaService, createHonertiaRenderer(c))
+
+  // Build optional layers
+  const databaseLayer = config?.database
+    ? Layer.succeed(DatabaseService, config.database(c))
+    : Layer.succeed(DatabaseService, (c as any).var?.db)
+
+  let baseLayer = Layer.mergeAll(
+    requestLayer,
+    responseLayer,
+    honertiaLayer,
+    databaseLayer
+  )
+
+  if ((c as any).var?.auth) {
+    baseLayer = Layer.merge(baseLayer, Layer.succeed(AuthService, (c as any).var.auth))
+  }
+
+  if ((c as any).var?.authUser) {
+    baseLayer = Layer.merge(baseLayer, Layer.succeed(AuthUserService, (c as any).var.authUser as AuthUser))
+  }
+
+  return baseLayer as Layer.Layer<
+    | RequestService
+    | ResponseFactoryService
+    | HonertiaService
+    | DatabaseService
+    | AuthService
+    | AuthUserService,
+    never,
+    never
+  >
+}
+
+/**
+ * Get the Effect runtime from Hono context.
+ */
+export function getEffectRuntime<E extends Env>(
+  c: HonoContext<E>
+): ManagedRuntime.ManagedRuntime<any, never> | undefined {
+  return (c as any).var?.[EFFECT_RUNTIME]
+}
+
+/**
+ * Middleware that sets up the Effect runtime for each request.
+ */
+export function effectBridge<E extends Env>(
+  config?: EffectBridgeConfig<E>
+): MiddlewareHandler<E> {
+  return async (c, next) => {
+    const layer = buildContextLayer(c, config)
+    const runtime = ManagedRuntime.make(layer)
+
+    // Store runtime in context
+    c.set(EFFECT_RUNTIME as any, runtime)
+
+    try {
+      await next()
+    } finally {
+      // Cleanup runtime after request
+      await runtime.dispose()
+    }
+  }
+}
