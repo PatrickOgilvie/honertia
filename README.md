@@ -1,7 +1,17 @@
 # Honertia
 
 [![npm version](https://img.shields.io/npm/v/honertia.svg)](https://www.npmjs.com/package/honertia)
+[![Bundle Size](https://img.shields.io/bundlephobia/minzip/honertia)](https://bundlephobia.com/package/honertia)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue.svg)](https://www.typescriptlang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+[![Hono](https://img.shields.io/badge/Hono-E36002?logo=hono&logoColor=fff)](https://hono.dev/)
+[![Cloudflare Workers](https://img.shields.io/badge/Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=fff)](https://workers.cloudflare.com/)
+[![Effect](https://img.shields.io/badge/Effect-TS-black)](https://effect.website/)
+
+## Raison d'être
+
+I've found myself wanting to use Cloudflare Workers for everything, but having come from a Laravel background nothing quite matched the DX and simplicity of Laravel x Inertia.js. When building Laravel projects I would always use Loris Leiva's laravel-actions package among other opinionated architecture decisions such as Vite, Tailwind, Bun, React etc., all of which have or will be incorporated into this project. With Cloudflare Workers the obvious choice is Hono and so we've adapted the Inertia.js protocol to run on workers+hono to mimic a Laravel-style app. Ever since learning of Effect.ts I've known that I wanted to use it for something bigger, and so we've utilised it here. Ultimately this is a workers+hono+vite+bun+laravel+inertia+effect+betterauth+planetscale mashup that delivers clean, readable, and powerful web app scaffolding.
 
 An Inertia.js-style adapter for Hono with Effect.js integration. Build full-stack applications with type-safe server actions, Laravel-inspired validation, and seamless React rendering.
 
@@ -25,157 +35,131 @@ bun add honertia
 ```typescript
 // src/index.ts
 import { Hono } from 'hono'
-import {
-  honertia,
-  createTemplate,
-  loadUser,
-  shareAuthMiddleware,
-  effectBridge,
-  effectRoutes,
-  effectAuthRoutes,
-  RequireAuthLayer,
-} from 'honertia'
+import { logger } from 'hono/logger'
+import { setupHonertia, createTemplate, registerErrorHandlers, vite } from 'honertia'
 
-const app = new Hono()
+import { createDb } from './db'
+import type { Env } from './types'
+import { createAuth } from './lib/auth'
+import { registerRoutes } from './routes'
 
-// Core middleware
-app.use('*', honertia({
-  version: '1.0.0',
-  render: createTemplate({
-    title: 'My App',
-    scripts: ['http://localhost:5173/src/main.tsx'],
-  }),
-}))
+const app = new Hono<Env>()
 
-// Database & Auth setup (your own middleware)
+// Database & Auth
 app.use('*', async (c, next) => {
   c.set('db', createDb(c.env.DATABASE_URL))
-  c.set('auth', createAuth({ /* config */ }))
+  c.set('auth', createAuth({
+    db: c.var.db,
+    secret: c.env.BETTER_AUTH_SECRET,
+    baseURL: new URL(c.req.url).origin,
+  }))
   await next()
 })
 
-// Auth middleware
-app.use('*', loadUser())
-app.use('*', shareAuthMiddleware())
-
-// Effect bridge (sets up Effect runtime per request)
-app.use('*', effectBridge())
-
-// Register routes
-effectAuthRoutes(app, {
-  loginComponent: 'Auth/Login',
-  registerComponent: 'Auth/Register',
-})
-
-effectRoutes(app)
-  .provide(RequireAuthLayer)
-  .group((route) => {
-    route.get('/', showDashboard)
-    route.get('/projects', listProjects)
-    route.post('/projects', createProject)
-  })
-
-export default app
-```
-
-### Using `setupHonertia` (Recommended)
-
-For a cleaner setup, use `setupHonertia` which bundles all core middleware into a single call:
-
-```typescript
-import { Hono } from 'hono'
-import { setupHonertia, createTemplate, effectRoutes } from 'honertia'
-
-const app = new Hono()
-
-app.use('*', setupHonertia({
-  honertia: {
-    version: '1.0.0',
-    render: createTemplate({
-      title: 'My App',
-      scripts: ['http://localhost:5173/src/main.tsx'],
-    }),
-  },
-  auth: {
-    userKey: 'user',
-    sessionCookie: 'session',
-  },
-  effect: {
-    // Effect bridge configuration
-  },
-}))
-
-export default app
-```
-
-This is equivalent to manually registering:
-- `honertia()` - Core Honertia middleware
-- `loadUser()` - Loads authenticated user into context
-- `shareAuthMiddleware()` - Shares auth state with pages
-- `effectBridge()` - Sets up Effect runtime for each request
-
-#### Adding Custom Middleware
-
-You can inject additional middleware that runs after the core setup:
-
-```typescript
-import { cors } from 'hono/cors'
-import { logger } from 'hono/logger'
-
-app.use('*', setupHonertia({
-  honertia: {
-    version: '1.0.0',
-    render: createTemplate({ title: 'My App', scripts: [...] }),
-  },
-  middleware: [
-    cors(),
-    logger(),
-    myCustomMiddleware(),
-  ],
-}))
-```
-
-The custom middleware runs in order after `effectBridge`, giving you access to all Honertia context variables.
-
-#### Environment-Aware Templates
-
-`createTemplate` can accept a function that receives the Hono context, enabling environment-specific configuration:
-
-```typescript
-const viteHmrHead = `
-  <script type="module">
-    import RefreshRuntime from 'http://localhost:5173/@react-refresh'
-    RefreshRuntime.injectIntoGlobalHook(window)
-    window.$RefreshReg$ = () => {}
-    window.$RefreshSig$ = () => (type) => type
-    window.__vite_plugin_react_preamble_installed__ = true
-  </script>
-  <script type="module" src="http://localhost:5173/@vite/client"></script>
-`
-
-app.use('*', setupHonertia({
+// Honertia (bundles core middleware, auth loading, and Effect bridge)
+app.use('*', setupHonertia<Env>({
   honertia: {
     version: '1.0.0',
     render: createTemplate((ctx) => {
       const isProd = ctx.env.ENVIRONMENT === 'production'
       return {
-        title: 'My App',
-        scripts: isProd
-          ? ['/assets/main.js']
-          : ['http://localhost:5173/src/main.tsx'],
-        head: isProd
-          ? '<link rel="icon" href="/favicon.svg" />'
-          : `${viteHmrHead}<link rel="icon" href="/favicon.svg" />`,
+        title: 'Dashboard',
+        scripts: isProd ? ['/assets/main.js'] : [vite.script()],
+        head: isProd ? '' : vite.hmrHead(),
       }
     }),
   },
+  middleware: [
+    logger(),
+    // register additional middleware here...
+  ],
 }))
+
+registerRoutes(app)
+registerErrorHandlers(app)
+
+export default app
 ```
 
-This pattern allows you to:
-- Use Vite HMR in development, built assets in production
-- Access environment variables from `ctx.env`
-- Dynamically configure any template option based on request context
+```typescript
+// src/routes.ts
+import type { Hono } from 'hono'
+import type { Env } from './types'
+import { effectRoutes } from 'honertia/effect'
+import { effectAuthRoutes, RequireAuthLayer } from 'honertia/auth'
+import { showDashboard, listProjects, createProject, showProject, deleteProject } from './actions'
+
+export function registerRoutes(app: Hono<Env>) {
+  // Auth routes (login, register, logout, API handler)
+  effectAuthRoutes(app, {
+    loginComponent: 'Auth/Login',
+    registerComponent: 'Auth/Register',
+  })
+
+  // Routes that require the user to be authenticated
+  effectRoutes(app)
+    .provide(RequireAuthLayer)
+    .group((route) => {
+      route.get('/', showDashboard) // GET example.com
+
+      route.prefix('/projects').group((route) => {
+        route.get('/', listProjects)        // GET    example.com/projects
+        route.post('/', createProject)      // POST   example.com/projects
+        route.get('/:id', showProject)      // GET    example.com/projects/2
+        route.delete('/:id', deleteProject) // DELETE example.com/projects/2
+      })
+    })
+}
+```
+
+### Example Action
+
+Here's the `listProjects` action referenced above:
+
+```typescript
+// src/actions/projects/list.ts
+import { Effect } from 'effect'
+import { eq } from 'drizzle-orm'
+import { DatabaseService, AuthUserService, render, type AuthUser } from 'honertia/effect'
+import { schema, type Database, type Project } from '../../db'
+
+interface ProjectsIndexProps {
+  projects: Project[]
+}
+
+const fetchProjects = (
+  db: Database,
+  user: AuthUser
+): Effect.Effect<ProjectsIndexProps, Error, never> =>
+  Effect.tryPromise({
+    try: async () => {
+      const projects = await db.query.projects.findMany({
+        where: eq(schema.projects.userId, user.user.id),
+        orderBy: (projects, { desc }) => [desc(projects.createdAt)],
+      })
+      return { projects }
+    },
+    catch: (error) => error instanceof Error ? error : new Error(String(error)),
+  })
+
+export const listProjects = Effect.gen(function* () {
+  const db = yield* DatabaseService
+  const user = yield* AuthUserService
+  const props = yield* fetchProjects(db as Database, user)
+  return yield* render('Dashboard/Projects/Index', props)
+})
+```
+
+### Vite Helpers
+
+The `vite` helper provides dev/prod asset management:
+
+```typescript
+import { vite } from 'honertia'
+
+vite.script()   // 'http://localhost:5173/src/main.tsx'
+vite.hmrHead()  // HMR preamble script tags for React Fast Refresh
+```
 
 ## Core Concepts
 
