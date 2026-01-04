@@ -941,6 +941,13 @@ On Cloudflare Workers, database connections and other I/O objects are isolated p
 
 If you're using PlanetScale with Hyperdrive, the "connection" you create per request is lightweight - it's just a client pointing at Hyperdrive's persistent connection pool.
 
+## Acknowledgements
+
+- Inertia.js by Jonathan Reinink and its contributors
+- Laravel by Taylor Otwell and the Laravel community
+
+🐐
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
