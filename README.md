@@ -40,6 +40,8 @@ import { registerRoutes } from './routes'
 
 const app = new Hono<Env>()
 const assetVersion = createVersion(manifest)
+const entry = manifest['src/main.tsx']
+const assetPath = (path: string) => `/${path}`
 
 class BindingsService extends Context.Tag('app/Bindings')<
   BindingsService,
@@ -66,8 +68,8 @@ app.use('*', setupHonertia<Env, BindingsService>({
       const isProd = ctx.env.ENVIRONMENT === 'production'
       return {
         title: 'My Web App',
-        scripts: isProd ? ['/assets/main.js'] : [vite.script()],
-        styles: isProd ? ['/assets/main.css'] : [],
+        scripts: isProd ? [assetPath(entry.file)] : [vite.script()],
+        styles: isProd ? (entry.css ?? []).map(assetPath) : [],
         head: isProd ? '' : vite.hmrHead(),
       }
     }),
@@ -159,20 +161,21 @@ Install client dependencies:
 
 ```bash
 bun add react react-dom @inertiajs/react
-bun add -d @vitejs/plugin-react
+bun add -d @vitejs/plugin-react tailwindcss @tailwindcss/vite
 ```
 
-Create a Vite config that enables React, sets up an alias used in the examples,
-and emits `dist/manifest.json`:
+Create a Vite config that enables Tailwind v4, sets up an alias used in the
+examples, and emits `dist/manifest.json`:
 
 ```typescript
 // vite.config.ts
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [tailwindcss(), react()],
   build: {
     outDir: 'dist',
     // Use an explicit filename so imports match build output.
@@ -187,10 +190,28 @@ export default defineConfig({
 })
 ```
 
+Create a Tailwind CSS entry file:
+
+```css
+/* src/styles.css */
+@import "tailwindcss";
+
+@layer base {
+  body {
+    margin: 0;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    background-color: #f8fafc;
+    color: #0f172a;
+  }
+}
+```
+
 Set up the Inertia client entry point (default path matches `vite.script()`):
 
 ```tsx
 // src/main.tsx
+import './styles.css'
+
 import { createInertiaApp } from '@inertiajs/react'
 import { createRoot } from 'react-dom/client'
 
@@ -213,10 +234,15 @@ createInertiaApp({
 The `resolve` function maps `render('Projects/Index')` to
 `src/pages/Projects/Index.tsx`.
 
+Optional: add a `tailwind.config.ts` only if you need theme extensions or
+custom content globs.
+
 ### Build & Deploy Notes
 
-The server imports `dist/manifest.json`, so it must exist at build time. When
-deploying with Wrangler, build the client assets first:
+The server imports `dist/manifest.json`, so it must exist at build time. In
+production, read scripts and styles from the manifest (Tailwind's CSS is listed
+under your entry's `css` array). When deploying with Wrangler, build the client
+assets first:
 
 ```bash
 # build client assets before deploying the worker
@@ -238,6 +264,7 @@ Here's a minimal project layout that matches the Quick Start:
 │   ├── index.ts                 # Hono app setup (setupHonertia)
 │   ├── routes.ts                # effectRoutes / effectAuthRoutes
 │   ├── main.tsx                 # Inertia + React client entry
+│   ├── styles.css               # Tailwind CSS entry
 │   ├── actions/
 │   │   └── projects/
 │   │       └── list.ts           # listProjects action

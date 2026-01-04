@@ -9,6 +9,14 @@ export interface PageProps {
   errors?: Record<string, string>
 }
 
+export interface AssetManifestEntry {
+  file?: string
+  css?: string[]
+  assets?: string[]
+}
+
+export type AssetManifest = Record<string, string | AssetManifestEntry>
+
 export interface TemplateOptions {
   title?: string
   scripts?: string[]
@@ -30,11 +38,18 @@ export interface TemplateOptions {
  * 
  * @example Dynamic config based on environment
  * ```ts
+ * const entry = manifest['src/main.tsx']
+ * const assetPath = (path: string) => `/${path}`
+ *
  * createTemplate((ctx) => ({
  *   title: 'App',
- *   scripts: ctx.env.ENVIRONMENT === 'production' 
- *     ? ['/assets/main.js']
- *     : ['http://localhost:5173/src/main.tsx'],
+ *   scripts: ctx.env.ENVIRONMENT === 'production'
+ *     ? [assetPath(entry.file)]
+ *     : [vite.script()],
+ *   styles: ctx.env.ENVIRONMENT === 'production'
+ *     ? (entry.css ?? []).map(assetPath)
+ *     : [],
+ *   head: ctx.env.ENVIRONMENT === 'production' ? '' : vite.hmrHead(),
  * }))
  * ```
  */
@@ -96,8 +111,29 @@ function escapeHtml(str: string): string {
     .replace(/'/g, '&#39;')
 }
 
-export function createVersion(manifest: Record<string, string>): string {
-  const combined = Object.values(manifest).sort().join('')
+export function createVersion(manifest: AssetManifest): string {
+  const assetFiles: string[] = []
+
+  for (const value of Object.values(manifest)) {
+    if (typeof value === 'string') {
+      assetFiles.push(value)
+      continue
+    }
+    if (!value || typeof value !== 'object') {
+      continue
+    }
+    if (typeof value.file === 'string') {
+      assetFiles.push(value.file)
+    }
+    if (Array.isArray(value.css)) {
+      assetFiles.push(...value.css)
+    }
+    if (Array.isArray(value.assets)) {
+      assetFiles.push(...value.assets)
+    }
+  }
+
+  const combined = assetFiles.sort().join('')
   let hash = 0
   for (let i = 0; i < combined.length; i++) {
     const char = combined.charCodeAt(i)
@@ -140,7 +176,7 @@ export const vite = {
    * @param port - Vite dev server port (default: 5173)
    * @example
    * ```ts
-   * scripts: isProd ? ['/assets/main.js'] : [vite.script()]
+   * scripts: isProd ? [manifest['src/main.tsx'].file] : [vite.script()]
    * ```
    */
   script(entry = '/src/main.tsx', port = 5173): string {
