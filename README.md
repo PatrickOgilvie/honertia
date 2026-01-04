@@ -25,6 +25,8 @@ bun add honertia
 
 ## Quick Start
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/PatrickOgilvie/honertia-worker-demo)
+
 ### Recommended File Structure
 
 ```
@@ -40,7 +42,9 @@ bun add honertia
 │   ├── pages/
 │   │   └── Projects/
 │   │       └── Index.tsx         # render('Projects/Index')
-│   ├── db.ts
+│   ├── db/
+│   │   └── db.ts
+│   │   └── schema.ts
 │   ├── lib/
 │   │   └── auth.ts
 │   └── types.ts
@@ -60,8 +64,8 @@ import { setupHonertia, createTemplate, createVersion, registerErrorHandlers, vi
 import { Context, Layer } from 'effect'
 import manifest from '../dist/manifest.json'
 
-import { createDb } from './db'
 import type { Env } from './types'
+import { createDb } from './db/db'
 import { createAuth } from './lib/auth'
 import { registerRoutes } from './routes'
 
