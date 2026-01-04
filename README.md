@@ -37,6 +37,7 @@ bun add honertia
 import { Hono } from 'hono'
 import { logger } from 'hono/logger'
 import { setupHonertia, createTemplate, registerErrorHandlers, vite } from 'honertia'
+import { Context, Layer } from 'effect'
 
 import { createDb } from './db'
 import type { Env } from './types'
@@ -44,6 +45,11 @@ import { createAuth } from './lib/auth'
 import { registerRoutes } from './routes'
 
 const app = new Hono<Env>()
+
+class BindingsService extends Context.Tag('app/Bindings')<
+  BindingsService,
+  { KV: KVNamespace }
+>() {}
 
 // Database & Auth
 app.use('*', async (c, next) => {
@@ -57,7 +63,7 @@ app.use('*', async (c, next) => {
 })
 
 // Honertia (bundles core middleware, auth loading, and Effect bridge)
-app.use('*', setupHonertia<Env>({
+app.use('*', setupHonertia<Env, BindingsService>({
   honertia: {
     version: '1.0.0',
     render: createTemplate((ctx) => {
@@ -67,6 +73,11 @@ app.use('*', setupHonertia<Env>({
         scripts: isProd ? ['/assets/main.js'] : [vite.script()],
         head: isProd ? '' : vite.hmrHead(),
       }
+    }),
+  },
+  effect: {
+    services: (c) => Layer.succeed(BindingsService, {
+      KV: c.env.MY_KV,
     }),
   },
   middleware: [
@@ -220,6 +231,91 @@ Honertia provides these services via Effect's dependency injection:
 | `HonertiaService` | Page renderer |
 | `RequestService` | Request context (params, query, body) |
 | `ResponseFactoryService` | Response builders |
+
+#### Custom Services
+
+You can inject Cloudflare Worker bindings (KV, D1, Queues, Analytics Engine) as services using the `services` option in `setupHonertia`, `effectBridge`, or `effectRoutes`.
+
+Choose the option that matches your setup:
+
+- `setupHonertia`: recommended for most apps; keeps config in one place and applies services to every Effect handler.
+- `effectBridge`: use when wiring middleware manually or when you need precise middleware ordering; applies services to all Effect handlers.
+- `effectRoutes`: use when you want services scoped to a route group or different services per group.
+
+```typescript
+import { Effect, Layer, Context } from 'effect'
+import { setupHonertia, effectBridge, effectRoutes } from 'honertia'
+
+// Define your custom service
+export class BindingsService extends Context.Tag('app/Bindings')<
+  BindingsService,
+  {
+    KV: KVNamespace
+    ANALYTICS: AnalyticsEngineDataset
+    DB: D1Database
+  }
+>() {}
+
+// Option 1: setupHonertia (global services via the one-liner setup)
+app.use('*', setupHonertia<Env, BindingsService>({
+  honertia: {
+    version: '1.0.0',
+    render: (page) => JSON.stringify(page),
+  },
+  effect: {
+    services: (c) => Layer.succeed(BindingsService, {
+      KV: c.env.MY_KV,
+      ANALYTICS: c.env.ANALYTICS,
+      DB: c.env.DB,
+    }),
+  },
+}))
+
+// Option 2: effectBridge (manual middleware wiring)
+app.use('*', effectBridge<Env, BindingsService>({
+  database: (c) => createDb(c.env.DATABASE_URL),
+  services: (c) => Layer.succeed(BindingsService, {
+    KV: c.env.MY_KV,
+    ANALYTICS: c.env.ANALYTICS,
+    DB: c.env.DB,
+  }),
+}))
+
+// Option 3: effectRoutes (scoped to a route group)
+effectRoutes<Env, BindingsService>(app, {
+  services: (c) => Layer.succeed(BindingsService, {
+    KV: c.env.MY_KV,
+    ANALYTICS: c.env.ANALYTICS,
+    DB: c.env.DB,
+  }),
+}).group((route) => {
+  route.get('/data', getDataFromKV)
+})
+
+// Use the custom service in your actions
+const getDataFromKV = Effect.gen(function* () {
+  const bindings = yield* BindingsService
+  const value = yield* Effect.tryPromise(() =>
+    bindings.KV.get('my-key')
+  )
+  return yield* json({ value })
+})
+```
+
+You can provide multiple bindings in any option using `Layer.mergeAll` (for example, a `QueueService` tag for a queue binding):
+
+```typescript
+app.use('*', effectBridge<Env, BindingsService | QueueService>({
+  services: (c) => Layer.mergeAll(
+    Layer.succeed(BindingsService, {
+      KV: c.env.MY_KV,
+      ANALYTICS: c.env.ANALYTICS,
+      DB: c.env.DB,
+    }),
+    Layer.succeed(QueueService, c.env.MY_QUEUE),
+  ),
+}))
+```
 
 ### Routing
 

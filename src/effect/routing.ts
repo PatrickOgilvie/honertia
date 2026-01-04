@@ -44,13 +44,14 @@ export type BaseServices =
  */
 export class EffectRouteBuilder<
   E extends Env,
-  ProvidedServices = never
+  ProvidedServices = never,
+  CustomServices = never
 > {
   constructor(
     private readonly app: Hono<E>,
     private readonly layers: Layer.Layer<any, never, never>[] = [],
     private readonly pathPrefix: string = '',
-    private readonly bridgeConfig?: EffectBridgeConfig<E>
+    private readonly bridgeConfig?: EffectBridgeConfig<E, CustomServices>
   ) {}
 
   /**
@@ -59,7 +60,7 @@ export class EffectRouteBuilder<
    */
   provide<S, LayerErr extends AppError>(
     layer: Layer.Layer<S, LayerErr, never>
-  ): EffectRouteBuilder<E, ProvidedServices | S> {
+  ): EffectRouteBuilder<E, ProvidedServices | S, CustomServices> {
     return new EffectRouteBuilder(
       this.app,
       [...this.layers, layer as Layer.Layer<S, never, never>],
@@ -71,7 +72,7 @@ export class EffectRouteBuilder<
   /**
    * Set path prefix for all routes in this builder.
    */
-  prefix(path: string): EffectRouteBuilder<E, ProvidedServices> {
+  prefix(path: string): EffectRouteBuilder<E, ProvidedServices, CustomServices> {
     const normalizedPath = path.replace(/\/$/, '')
     return new EffectRouteBuilder(
       this.app,
@@ -84,7 +85,7 @@ export class EffectRouteBuilder<
   /**
    * Create a nested group with the same configuration.
    */
-  group(callback: (route: EffectRouteBuilder<E, ProvidedServices>) => void): void {
+  group(callback: (route: EffectRouteBuilder<E, ProvidedServices, CustomServices>) => void): void {
     callback(this)
   }
 
@@ -101,7 +102,7 @@ export class EffectRouteBuilder<
   /**
    * Create a Hono handler from an Effect.
    */
-  private createHandler<R extends BaseServices | ProvidedServices>(
+  private createHandler<R extends BaseServices | ProvidedServices | CustomServices>(
     effect: EffectHandler<R, AppError | Error>
   ): MiddlewareHandler<E> {
     const layers = this.layers
@@ -128,7 +129,7 @@ export class EffectRouteBuilder<
   /**
    * Register a GET route.
    */
-  get<R extends BaseServices | ProvidedServices>(    path: string,
+  get<R extends BaseServices | ProvidedServices | CustomServices>(    path: string,
     effect: EffectHandler<R, AppError | Error>
   ): void {
     this.app.get(this.resolvePath(path), this.createHandler(effect))
@@ -137,7 +138,7 @@ export class EffectRouteBuilder<
   /**
    * Register a POST route.
    */
-  post<R extends BaseServices | ProvidedServices>(
+  post<R extends BaseServices | ProvidedServices | CustomServices>(
     path: string,
     effect: EffectHandler<R, AppError | Error>
   ): void {
@@ -147,7 +148,7 @@ export class EffectRouteBuilder<
   /**
    * Register a PUT route.
    */
-  put<R extends BaseServices | ProvidedServices>(
+  put<R extends BaseServices | ProvidedServices | CustomServices>(
     path: string,
     effect: EffectHandler<R, AppError | Error>
   ): void {
@@ -157,7 +158,7 @@ export class EffectRouteBuilder<
   /**
    * Register a PATCH route.
    */
-  patch<R extends BaseServices | ProvidedServices>(
+  patch<R extends BaseServices | ProvidedServices | CustomServices>(
     path: string,
     effect: EffectHandler<R, AppError | Error>
   ): void {
@@ -167,7 +168,7 @@ export class EffectRouteBuilder<
   /**
    * Register a DELETE route.
    */
-  delete<R extends BaseServices | ProvidedServices>(
+  delete<R extends BaseServices | ProvidedServices | CustomServices>(
     path: string,
     effect: EffectHandler<R, AppError | Error>
   ): void {
@@ -177,7 +178,7 @@ export class EffectRouteBuilder<
   /**
    * Register a route for all HTTP methods.
    */
-  all<R extends BaseServices | ProvidedServices>(
+  all<R extends BaseServices | ProvidedServices | CustomServices>(
     path: string,
     effect: EffectHandler<R, AppError | Error>
   ): void {
@@ -198,9 +199,9 @@ export class EffectRouteBuilder<
  *     route.post('/projects', createProject)
  *   })
  */
-export function effectRoutes<E extends Env>(
+export function effectRoutes<E extends Env, CustomServices = never>(
   app: Hono<E>,
-  config?: EffectBridgeConfig<E>
-): EffectRouteBuilder<E, never> {
+  config?: EffectBridgeConfig<E, CustomServices>
+): EffectRouteBuilder<E, never, CustomServices> {
   return new EffectRouteBuilder(app, [], '', config)
 }

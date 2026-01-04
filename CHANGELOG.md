@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-01-04
+
+### Added
+
+- Custom services support for Effect bridge/routes via the `services` layer hook
+- Custom services support in `setupHonertia` effect configuration
+- Cloudflare bindings documentation and examples for custom services
+- Custom services tests covering `setupHonertia` and route-only usage
+
+### Changed
+
+- Effect route builder typing to include custom services in handler requirements
+
 ## [0.1.0] - 2026-01-03
 
 ### Added

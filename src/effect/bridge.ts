@@ -21,9 +21,33 @@ import {
 
 /**
  * Configuration for the Effect bridge.
+ *
+ * @typeParam E - Hono environment type
+ * @typeParam CustomServices - Custom services provided via the `services` option
+ *
+ * @example
+ * // Provide Cloudflare Worker bindings as a service
+ * effectBridge<Env, BindingsService>({
+ *   database: (c) => createDb(c.env.DATABASE_URL),
+ *   services: (c) => Layer.succeed(BindingsService, c.env),
+ * })
+ *
+ * @example
+ * // Provide multiple custom services
+ * effectBridge<Env, BindingsService | LoggerService>({
+ *   services: (c) => Layer.mergeAll(
+ *     Layer.succeed(BindingsService, c.env),
+ *     Layer.succeed(LoggerService, createLogger(c)),
+ *   ),
+ * })
  */
-export interface EffectBridgeConfig<E extends Env> {
+export interface EffectBridgeConfig<E extends Env, CustomServices = never> {
   database?: (c: HonoContext<E>) => unknown
+  /**
+   * Custom services to provide to all Effect handlers.
+   * Return a Layer that provides your custom services.
+   */
+  services?: (c: HonoContext<E>) => Layer.Layer<CustomServices, never, never>
 }
 
 /**
@@ -102,16 +126,17 @@ function createHonertiaRenderer<E extends Env>(c: HonoContext<E>): HonertiaRende
 /**
  * Build the Effect layer from Hono context.
  */
-export function buildContextLayer<E extends Env>(
+export function buildContextLayer<E extends Env, CustomServices = never>(
   c: HonoContext<E>,
-  config?: EffectBridgeConfig<E>
+  config?: EffectBridgeConfig<E, CustomServices>
 ): Layer.Layer<
   | RequestService
   | ResponseFactoryService
   | HonertiaService
   | DatabaseService
   | AuthService
-  | AuthUserService,
+  | AuthUserService
+  | CustomServices,
   never,
   never
 > {
@@ -139,13 +164,20 @@ export function buildContextLayer<E extends Env>(
     baseLayer = Layer.merge(baseLayer, Layer.succeed(AuthUserService, (c as any).var.authUser as AuthUser))
   }
 
+  // Merge custom services if provided
+  if (config?.services) {
+    const customServicesLayer = config.services(c)
+    baseLayer = Layer.merge(baseLayer, customServicesLayer)
+  }
+
   return baseLayer as Layer.Layer<
     | RequestService
     | ResponseFactoryService
     | HonertiaService
     | DatabaseService
     | AuthService
-    | AuthUserService,
+    | AuthUserService
+    | CustomServices,
     never,
     never
   >
@@ -163,8 +195,8 @@ export function getEffectRuntime<E extends Env>(
 /**
  * Middleware that sets up the Effect runtime for each request.
  */
-export function effectBridge<E extends Env>(
-  config?: EffectBridgeConfig<E>
+export function effectBridge<E extends Env, CustomServices = never>(
+  config?: EffectBridgeConfig<E, CustomServices>
 ): MiddlewareHandler<E> {
   return async (c, next) => {
     const layer = buildContextLayer(c, config)

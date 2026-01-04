@@ -15,7 +15,7 @@ import { effectBridge, type EffectBridgeConfig } from './effect/bridge.js'
 /**
  * Configuration for Honertia setup.
  */
-export interface HonertiaSetupConfig<E extends Env = Env> {
+export interface HonertiaSetupConfig<E extends Env = Env, CustomServices = never> {
   /**
    * Honertia core configuration.
    */
@@ -24,7 +24,7 @@ export interface HonertiaSetupConfig<E extends Env = Env> {
   /**
    * Effect bridge configuration (optional).
    */
-  effect?: EffectBridgeConfig<E>
+  effect?: EffectBridgeConfig<E, CustomServices>
 
   /**
    * Auth configuration (optional).
@@ -62,14 +62,14 @@ export interface HonertiaSetupConfig<E extends Env = Env> {
  * }))
  * ```
  */
-export function setupHonertia<E extends Env>(
-  config: HonertiaSetupConfig<E>
+export function setupHonertia<E extends Env, CustomServices = never>(
+  config: HonertiaSetupConfig<E, CustomServices>
 ): MiddlewareHandler<E> {
   const middlewares: MiddlewareHandler<E>[] = [
     honertia(config.honertia),
     loadUser<E>(config.auth),
     shareAuthMiddleware<E>(),
-    effectBridge<E>(config.effect),
+    effectBridge<E, CustomServices>(config.effect),
     ...(config.middleware ?? []),
   ]
 
