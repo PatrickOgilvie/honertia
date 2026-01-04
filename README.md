@@ -36,8 +36,9 @@ bun add honertia
 // src/index.ts
 import { Hono } from 'hono'
 import { logger } from 'hono/logger'
-import { setupHonertia, createTemplate, registerErrorHandlers, vite } from 'honertia'
+import { setupHonertia, createTemplate, createVersion, registerErrorHandlers, vite } from 'honertia'
 import { Context, Layer } from 'effect'
+import manifest from '../dist/manifest.json'
 
 import { createDb } from './db'
 import type { Env } from './types'
@@ -45,13 +46,14 @@ import { createAuth } from './lib/auth'
 import { registerRoutes } from './routes'
 
 const app = new Hono<Env>()
+const assetVersion = createVersion(manifest)
 
 class BindingsService extends Context.Tag('app/Bindings')<
   BindingsService,
   { KV: KVNamespace }
 >() {}
 
-// Database & Auth
+// Request-scoped setup: put db/auth on c.var so Honertia/Effect can read them.
 app.use('*', async (c, next) => {
   c.set('db', createDb(c.env.DATABASE_URL))
   c.set('auth', createAuth({
@@ -62,10 +64,11 @@ app.use('*', async (c, next) => {
   await next()
 })
 
-// Honertia (bundles core middleware, auth loading, and Effect bridge)
+// Honertia bundles the core middleware + auth loading + Effect runtime setup.
 app.use('*', setupHonertia<Env, BindingsService>({
   honertia: {
-    version: '1.0.0',
+    // Use your asset manifest hash so Inertia reloads on deploy.
+    version: assetVersion,
     render: createTemplate((ctx) => {
       const isProd = ctx.env.ENVIRONMENT === 'production'
       return {
@@ -76,10 +79,12 @@ app.use('*', setupHonertia<Env, BindingsService>({
     }),
   },
   effect: {
+    // Expose Cloudflare bindings to Effect handlers via a service layer.
     services: (c) => Layer.succeed(BindingsService, {
       KV: c.env.MY_KV,
     }),
   },
+  // Optional: extra Hono middleware in the same chain.
   middleware: [
     logger(),
     // register additional middleware here...
@@ -101,16 +106,18 @@ import { effectAuthRoutes, RequireAuthLayer } from 'honertia/auth'
 import { showDashboard, listProjects, createProject, showProject, deleteProject } from './actions'
 
 export function registerRoutes(app: Hono<Env>) {
-  // Auth routes (login, register, logout, API handler)
+  // Auth routes (login, register, logout, API handler) wired to better-auth.
+  // CORS for /api/auth/* can be enabled via the `cors` option (see below).
   effectAuthRoutes(app, {
     loginComponent: 'Auth/Login',
     registerComponent: 'Auth/Register',
   })
 
-  // Routes that require the user to be authenticated
+  // Effect routes give you typed, DI-friendly handlers (no direct Hono ctx).
   effectRoutes(app)
     .provide(RequireAuthLayer)
     .group((route) => {
+      // Grouped routes share layers and path prefixes.
       route.get('/', showDashboard) // GET example.com
 
       route.prefix('/projects').group((route) => {
@@ -159,6 +166,85 @@ export const listProjects = Effect.gen(function* () {
   const props = yield* fetchProjects(db as Database, user)
   return yield* render('Dashboard/Projects/Index', props)
 })
+```
+
+The component name `Dashboard/Projects/Index` maps to a file on disk. A common
+Vite + React layout is:
+
+```
+src/pages/Dashboard/Projects/Index.tsx
+```
+
+That means the folders mirror the component path, and `Index.tsx` is the file
+that exports the page component:
+
+```tsx
+// src/pages/Dashboard/Projects/Index.tsx
+/**
+ * Projects Index Page
+ */
+
+import { Link } from '@inertiajs/react'
+import Layout from '~/components/Layout'
+import type { PageProps, Project } from '~/types'
+
+interface Props {
+  projects: Project[]
+}
+
+export default function ProjectsIndex({ projects }: PageProps<Props>) {
+  return (
+    <Layout>
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="text-2xl font-bold text-gray-900">Projects</h1>
+        <Link
+          href="/projects/create"
+          className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700"
+        >
+          New Project
+        </Link>
+      </div>
+      
+      <div className="bg-white rounded-lg shadow">
+        {projects.length === 0 ? (
+          <div className="p-6 text-center text-gray-500">
+            No projects yet.{' '}
+            <Link href="/projects/create" className="text-indigo-600 hover:underline">
+              Create your first project
+            </Link>
+          </div>
+        ) : (
+          <ul className="divide-y divide-gray-200">
+            {projects.map((project) => (
+              <li key={project.id}>
+                <Link
+                  href={`/projects/${project.id}`}
+                  className="block px-6 py-4 hover:bg-gray-50"
+                >
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <h3 className="text-sm font-medium text-gray-900">
+                        {project.name}
+                      </h3>
+                      {project.description && (
+                        <p className="text-sm text-gray-500 mt-1">
+                          {project.description}
+                        </p>
+                      )}
+                    </div>
+                    <span className="text-sm text-gray-400">
+                      {new Date(project.createdAt).toLocaleDateString()}
+                    </span>
+                  </div>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Layout>
+  )
+}
 ```
 
 ### Vite Helpers
@@ -566,6 +652,23 @@ effectAuthRoutes(app, {
   registerComponent: 'Auth/Register',
 })
 ```
+
+To enable CORS for the auth API handler (`/api/auth/*`), pass a `cors` config.
+By default, no CORS headers are added (recommended when your UI and API share the same origin).
+Use this when your frontend is on a different origin (local dev, separate domain, mobile app, etc.).
+
+```typescript
+effectAuthRoutes(app, {
+  apiPath: '/api/auth',
+  cors: {
+    origin: ['https://app.example.com', 'https://admin.example.com'],
+    credentials: true,
+  },
+})
+```
+
+This sets the appropriate `Access-Control-*` headers and handles `OPTIONS` preflight for the auth API routes.
+Always keep the `origin` list tight; avoid `'*'` for auth endpoints, especially with `credentials: true`.
 
 ## Action Factories
 
