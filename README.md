@@ -11,11 +11,11 @@
 
 ## Overview
 
-An Inertia.js-style adapter for Hono with Effect.js integration. Inertia keeps a server-driven app but behaves like an SPA: link clicks and form posts are intercepted, a fetch/XHR request returns a JSON page object (component + props), and the client swaps the page without a full reload. Honertia layers Laravel-style route patterns and Effect actions on top of that so handlers stay clean, readable, and composable.
+An Inertia.js-style adapter for Hono with Effect.ts integration. Inertia keeps a server-driven app but behaves like an SPA: link clicks and form posts are intercepted, a fetch/XHR request returns a JSON page object (component + props), and the client swaps the page without a full reload. Honertia layers Laravel-style route patterns and Effect actions on top of that so handlers stay clean, readable, and composable.
 
 ## Raison d'être
 
-I've found myself wanting to use Cloudflare Workers for everything, but having come from a Laravel background nothing quite matched the DX and simplicity of Laravel x Inertia.js. When building Laravel projects I would always use Loris Leiva's laravel-actions package among other opinionated architecture decisions such as Vite, Tailwind, Bun, React etc., all of which have or will be incorporated into this project. With Cloudflare Workers the obvious choice is Hono and so we've adapted the Inertia.js protocol to run on workers+hono to mimic a Laravel-style app. Ever since learning of Effect.ts I've known that I wanted to use it for something bigger, and so we've utilised it here. Ultimately this is a workers+hono+vite+bun+laravel+inertia+effect+betterauth+planetscale mashup.
+I wanted to build on Cloudflare Workers whilst retaining the ergonomics of the Laravel+Inertia combination. There are certain patterns that I always use with Laravel (such as the laravel-actions package) and so we have incorporated those ideas into honertia. Now, we can't have Laravel in javascript - but we can create it in the aggregate. For auth we have used better-auth, for validation we have leant on Effect's Schema, and for the database we are using Drizzle. To make it testable and hardy we wrapped everything in Effect.ts
 
 ## Installation
 
