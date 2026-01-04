@@ -65,7 +65,7 @@ app.use('*', setupHonertia<Env, BindingsService>({
     render: createTemplate((ctx) => {
       const isProd = ctx.env.ENVIRONMENT === 'production'
       return {
-        title: 'Dashboard',
+        title: 'My Web App',
         scripts: isProd ? ['/assets/main.js'] : [vite.script()],
         head: isProd ? '' : vite.hmrHead(),
       }
@@ -666,7 +666,7 @@ Use this when your frontend is on a different origin (local dev, separate domain
 effectAuthRoutes(app, {
   apiPath: '/api/auth',
   cors: {
-    origin: ['https://app.example.com', 'https://admin.example.com'],
+    origin: ['http://localhost:5173', 'http://localhost:3000'],
     credentials: true,
   },
 })
