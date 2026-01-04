@@ -27,8 +27,6 @@ bun add honertia
 
 ### Recommended File Structure
 
-Here's a minimal project layout that matches the Quick Start:
-
 ```
 .
 ├── src/
