@@ -67,6 +67,7 @@ app.use('*', setupHonertia<Env, BindingsService>({
       return {
         title: 'My Web App',
         scripts: isProd ? ['/assets/main.js'] : [vite.script()],
+        styles: isProd ? ['/assets/main.css'] : [],
         head: isProd ? '' : vite.hmrHead(),
       }
     }),
@@ -174,7 +175,8 @@ export default defineConfig({
   plugins: [react()],
   build: {
     outDir: 'dist',
-    manifest: true,
+    // Use an explicit filename so imports match build output.
+    manifest: 'manifest.json',
     emptyOutDir: true,
   },
   resolve: {
@@ -210,6 +212,21 @@ createInertiaApp({
 
 The `resolve` function maps `render('Projects/Index')` to
 `src/pages/Projects/Index.tsx`.
+
+### Build & Deploy Notes
+
+The server imports `dist/manifest.json`, so it must exist at build time. When
+deploying with Wrangler, build the client assets first:
+
+```bash
+# build client assets before deploying the worker
+bun run build:client
+wrangler deploy
+```
+
+Optional dev convenience: if you want to run the worker without building the
+client, you can keep a stub `dist/manifest.json` (ignored by git) and replace it
+once you run `vite build`.
 
 ### Recommended File Structure
 
