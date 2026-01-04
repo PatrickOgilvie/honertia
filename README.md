@@ -9,20 +9,13 @@
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=fff)](https://workers.cloudflare.com/)
 [![Effect](https://img.shields.io/badge/Effect-TS-black)](https://effect.website/)
 
+## Overview
+
+An Inertia.js-style adapter for Hono with Effect.js integration. Inertia keeps a server-driven app but behaves like an SPA: link clicks and form posts are intercepted, a fetch/XHR request returns a JSON page object (component + props), and the client swaps the page without a full reload. Honertia layers Laravel-style route patterns and Effect actions on top of that so handlers stay clean, readable, and composable.
+
 ## Raison d'être
 
-I've found myself wanting to use Cloudflare Workers for everything, but having come from a Laravel background nothing quite matched the DX and simplicity of Laravel x Inertia.js. When building Laravel projects I would always use Loris Leiva's laravel-actions package among other opinionated architecture decisions such as Vite, Tailwind, Bun, React etc., all of which have or will be incorporated into this project. With Cloudflare Workers the obvious choice is Hono and so we've adapted the Inertia.js protocol to run on workers+hono to mimic a Laravel-style app. Ever since learning of Effect.ts I've known that I wanted to use it for something bigger, and so we've utilised it here. Ultimately this is a workers+hono+vite+bun+laravel+inertia+effect+betterauth+planetscale mashup that delivers clean, readable, and powerful web app scaffolding.
-
-An Inertia.js-style adapter for Hono with Effect.js integration. Build full-stack applications with type-safe server actions, Laravel-inspired validation, and seamless React rendering.
-
-## Requirements
-
-- **Runtime**: Node.js 18+ or Bun 1.0+
-- **Peer Dependencies**:
-  - `hono` >= 4.0.0
-  - `better-auth` >= 1.0.0
-- **Dependencies**:
-  - `effect` >= 3.12.0
+I've found myself wanting to use Cloudflare Workers for everything, but having come from a Laravel background nothing quite matched the DX and simplicity of Laravel x Inertia.js. When building Laravel projects I would always use Loris Leiva's laravel-actions package among other opinionated architecture decisions such as Vite, Tailwind, Bun, React etc., all of which have or will be incorporated into this project. With Cloudflare Workers the obvious choice is Hono and so we've adapted the Inertia.js protocol to run on workers+hono to mimic a Laravel-style app. Ever since learning of Effect.ts I've known that I wanted to use it for something bigger, and so we've utilised it here. Ultimately this is a workers+hono+vite+bun+laravel+inertia+effect+betterauth+planetscale mashup.
 
 ## Installation
 
@@ -164,22 +157,25 @@ export const listProjects = Effect.gen(function* () {
   const db = yield* DatabaseService
   const user = yield* AuthUserService
   const props = yield* fetchProjects(db as Database, user)
-  return yield* render('Dashboard/Projects/Index', props)
+  return yield* render('Projects/Index', props)
 })
 ```
 
-The component name `Dashboard/Projects/Index` maps to a file on disk. A common
+The component name `Projects/Index` maps to a file on disk. A common
 Vite + React layout is:
 
 ```
-src/pages/Dashboard/Projects/Index.tsx
+src/pages/Projects/Index.tsx
 ```
 
 That means the folders mirror the component path, and `Index.tsx` is the file
-that exports the page component:
+that exports the page component. In the example below, `Link` comes from
+`@inertiajs/react` because it performs Inertia client-side visits (preserving
+page state and avoiding full reloads), whereas a plain `<a>` would do a full
+navigation.
 
 ```tsx
-// src/pages/Dashboard/Projects/Index.tsx
+// src/pages/Projects/Index.tsx
 /**
  * Projects Index Page
  */
@@ -257,6 +253,15 @@ import { vite } from 'honertia'
 vite.script()   // 'http://localhost:5173/src/main.tsx'
 vite.hmrHead()  // HMR preamble script tags for React Fast Refresh
 ```
+
+## Requirements
+
+- **Runtime**: Node.js 18+ or Bun 1.0+
+- **Peer Dependencies**:
+  - `hono` >= 4.0.0
+  - `better-auth` >= 1.0.0
+- **Dependencies**:
+  - `effect` >= 3.12.0
 
 ## Core Concepts
 
