@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-01-05
+
+### Added
+
+- `ValidateOptions` interface with JSDoc documentation for all options
+- Better error handling for malformed JSON request bodies (returns clear `ValidationError` instead of confusing field errors)
+- Tests for `attributes` option through `validateRequest`
+- Tests for nested field paths (`user.email`), array indices (`tags.1`), and deeply nested paths
+- README documentation for all `validateRequest` options (`errorComponent`, `messages`, `attributes`)
+
+### Changed
+
+- Simplified `validate` function signature from curried `validate(schema, options)(data)` to direct `validate(schema, data, options)`
+- Simplified `formatSchemaErrors` path extraction logic
+- Improved `getValidationData` error handling
+
 ## [0.1.5] - 2026-01-05
 
 ### Changed

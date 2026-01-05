@@ -879,6 +879,45 @@ export const createProject = Effect.gen(function* () {
 })
 ```
 
+### Validation Options
+
+`validateRequest` accepts an options object with:
+
+```typescript
+const input = yield* validateRequest(schema, {
+  // Re-render this component with errors on validation failure
+  // If not set, redirects back to the previous page
+  errorComponent: 'Projects/Create',
+
+  // Override default error messages per field
+  messages: {
+    name: 'Please enter a project name',
+    email: 'That email address is not valid',
+  },
+
+  // Human-readable field names for the :attribute placeholder
+  // Use with messages like 'The :attribute field is required'
+  attributes: {
+    name: 'project name',
+    email: 'email address',
+  },
+})
+```
+
+**Example with `:attribute` placeholder:**
+
+```typescript
+const schema = S.Struct({
+  email: S.String.pipe(S.minLength(1, { message: () => 'The :attribute field is required' })),
+})
+
+const input = yield* validateRequest(schema, {
+  attributes: { email: 'email address' },
+  errorComponent: 'Auth/Register',
+})
+// Error: "The email address field is required"
+```
+
 ### Available Validators
 
 #### Strings

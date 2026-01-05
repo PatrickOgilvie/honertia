@@ -10,31 +10,37 @@ import { ValidationError } from './errors.js'
 
 /**
  * Extract validation data from the request.
- * Merges route params, query params, and body.
+ * Merges route params, query params, and body (body takes precedence).
  */
-export const getValidationData = Effect.gen(function* () {
+export const getValidationData: Effect.Effect<
+  Record<string, unknown>,
+  ValidationError,
+  RequestService
+> = Effect.gen(function* () {
   const request = yield* RequestService
 
   const routeParams = request.params()
   const queryParams = request.query()
 
-  let body: Record<string, unknown> = {}
-  if (!['GET', 'HEAD'].includes(request.method.toUpperCase())) {
-    const contentType = request.header('Content-Type') || ''
-    const bodyResult = yield* Effect.tryPromise({
-      try: () => contentType.includes('application/json')
-        ? request.json<Record<string, unknown>>()
-        : request.parseBody(),
-      catch: () => ({} as Record<string, unknown>),
-    }).pipe(Effect.catchAll(() => Effect.succeed({} as Record<string, unknown>)))
-    body = bodyResult
+  // Only parse body for methods that typically have one
+  if (['GET', 'HEAD'].includes(request.method.toUpperCase())) {
+    return { ...routeParams, ...queryParams }
   }
 
-  return {
-    ...routeParams,
-    ...queryParams,
-    ...body,
-  }
+  const contentType = request.header('Content-Type') ?? ''
+  const isJson = contentType.includes('application/json')
+
+  const body = yield* Effect.tryPromise(() =>
+    isJson ? request.json<Record<string, unknown>>() : request.parseBody()
+  ).pipe(
+    Effect.mapError(() =>
+      new ValidationError({
+        errors: { form: isJson ? 'Invalid JSON body' : 'Could not parse request body' },
+      })
+    )
+  )
+
+  return { ...routeParams, ...queryParams, ...body }
 })
 
 /**
@@ -46,66 +52,86 @@ export function formatSchemaErrors(
   attributes: Record<string, string> = {}
 ): Record<string, string> {
   const errors: Record<string, string> = {}
+  const issues = ParseResult.ArrayFormatter.formatErrorSync(error)
 
-  // Use ArrayFormatter to get structured errors
-  const formattedErrors = ParseResult.ArrayFormatter.formatErrorSync(error)
-  
-  for (const issue of formattedErrors) {
-    const pathStr = issue.path.length > 0 
-      ? issue.path.map(p => typeof p === 'object' && p !== null && 'key' in p ? (p as { key: unknown }).key : String(p)).join('.') 
-      : 'form'
-    
-    if (errors[pathStr]) continue // First error wins
+  for (const issue of issues) {
+    const field = issue.path.length > 0 ? issue.path.map(String).join('.') : 'form'
 
-    const attribute = attributes[pathStr] ?? pathStr
-    const messageKey = messages[pathStr]
+    if (errors[field]) continue // First error wins
 
-    const message = messageKey ?? issue.message
-    errors[pathStr] = message.replace(/:attribute/g, attribute)
+    const attribute = attributes[field] ?? field
+    const message = messages[field] ?? issue.message
+
+    errors[field] = message.replace(/:attribute/g, attribute)
   }
 
   return errors
 }
 
 /**
+ * Options for validation functions.
+ */
+export interface ValidateOptions {
+  /**
+   * Custom error messages keyed by field name.
+   * Overrides the default messages from Effect Schema.
+   *
+   * @example
+   * { email: 'Please enter a valid email address' }
+   */
+  messages?: Record<string, string>
+
+  /**
+   * Human-readable names for fields, used with the `:attribute` placeholder.
+   * If a message contains `:attribute`, it will be replaced with the value here.
+   *
+   * @example
+   * // With attributes: { email: 'email address' }
+   * // And message: 'The :attribute field is required'
+   * // Produces: 'The email address field is required'
+   */
+  attributes?: Record<string, string>
+
+  /**
+   * The Inertia component to re-render when validation fails.
+   * If set, a ValidationError will trigger a re-render of this component
+   * with the errors passed as props. If not set, redirects back.
+   *
+   * @example
+   * 'Projects/Create'
+   */
+  errorComponent?: string
+}
+
+/**
  * Validate data against a schema.
  * Returns validated data or fails with ValidationError.
  */
-export const validate = <A, I>(
+export function validate<A, I>(
   schema: S.Schema<A, I>,
-  options?: {
-    messages?: Record<string, string>
-    attributes?: Record<string, string>
-    errorComponent?: string
-  }
-) =>
-  (data: unknown): Effect.Effect<A, ValidationError, never> =>
-    S.decodeUnknown(schema)(data).pipe(
-      Effect.mapError((error) =>
-        new ValidationError({
-          errors: formatSchemaErrors(
-            error,
-            options?.messages ?? {},
-            options?.attributes ?? {}
-          ),
-          component: options?.errorComponent,
-        })
-      )
+  data: unknown,
+  options: ValidateOptions = {}
+): Effect.Effect<A, ValidationError, never> {
+  return S.decodeUnknown(schema)(data).pipe(
+    Effect.mapError((error) =>
+      new ValidationError({
+        errors: formatSchemaErrors(error, options.messages, options.attributes),
+        component: options.errorComponent,
+      })
     )
+  )
+}
 
 /**
  * Validate request data against a schema.
  * Extracts data from request and validates in one step.
  */
-export const validateRequest = <A, I>(
+export function validateRequest<A, I>(
   schema: S.Schema<A, I>,
-  options?: {
-    messages?: Record<string, string>
-    attributes?: Record<string, string>
-    errorComponent?: string
-  }
-): Effect.Effect<A, ValidationError, RequestService> =>
-  Effect.gen(function* () {
+  options: ValidateOptions = {}
+): Effect.Effect<A, ValidationError, RequestService> {
+  return Effect.gen(function* () {
     const data = yield* getValidationData
-    return yield* validate(schema, options)(data)
+    return yield* validate(schema, data, options)
   })
+}

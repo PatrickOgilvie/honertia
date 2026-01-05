@@ -222,8 +222,49 @@ describe('formatSchemaErrors', () => {
       const option = Cause.failureOption(exit.cause)
       if (option._tag === 'Some') {
         const errors = formatSchemaErrors(option.value as any)
-        // Should have a nested path error
-        expect(Object.keys(errors).length).toBeGreaterThan(0)
+        expect(errors['user.name']).toBeDefined()
+        expect(errors['user.name']).toContain('at least 1 character')
+      }
+    }
+  })
+
+  test('handles array index in field path', async () => {
+    const schema = S.Struct({
+      tags: S.Array(S.String.pipe(S.minLength(1))),
+    })
+
+    const exit = Effect.runSyncExit(
+      S.decodeUnknown(schema)({ tags: ['valid', ''] })
+    )
+
+    if (Exit.isFailure(exit) && Cause.isFailure(exit.cause)) {
+      const option = Cause.failureOption(exit.cause)
+      if (option._tag === 'Some') {
+        const errors = formatSchemaErrors(option.value as any)
+        expect(errors['tags.1']).toBeDefined()
+        expect(errors['tags.1']).toContain('at least 1 character')
+      }
+    }
+  })
+
+  test('handles deeply nested field paths', async () => {
+    const schema = S.Struct({
+      company: S.Struct({
+        address: S.Struct({
+          zip: S.String.pipe(S.minLength(5)),
+        }),
+      }),
+    })
+
+    const exit = Effect.runSyncExit(
+      S.decodeUnknown(schema)({ company: { address: { zip: '123' } } })
+    )
+
+    if (Exit.isFailure(exit) && Cause.isFailure(exit.cause)) {
+      const option = Cause.failureOption(exit.cause)
+      if (option._tag === 'Some') {
+        const errors = formatSchemaErrors(option.value as any)
+        expect(errors['company.address.zip']).toBeDefined()
       }
     }
   })
@@ -237,7 +278,7 @@ describe('validate', () => {
     })
 
     const result = Effect.runSync(
-      validate(schema)({ name: 'John', age: 30 })
+      validate(schema, { name: 'John', age: 30 })
     )
 
     expect(result).toEqual({ name: 'John', age: 30 })
@@ -248,7 +289,7 @@ describe('validate', () => {
       name: S.String.pipe(S.minLength(3)),
     })
 
-    const exit = Effect.runSyncExit(validate(schema)({ name: 'Jo' }))
+    const exit = Effect.runSyncExit(validate(schema, { name: 'Jo' }))
 
     expect(Exit.isFailure(exit)).toBe(true)
     if (Exit.isFailure(exit) && Cause.isFailure(exit.cause)) {
@@ -267,9 +308,9 @@ describe('validate', () => {
     })
 
     const exit = Effect.runSyncExit(
-      validate(schema, {
+      validate(schema, { email: '' }, {
         messages: { email: 'Please enter your email' },
-      })({ email: '' })
+      })
     )
 
     if (Exit.isFailure(exit) && Cause.isFailure(exit.cause)) {
@@ -287,9 +328,9 @@ describe('validate', () => {
     })
 
     const exit = Effect.runSyncExit(
-      validate(schema, {
+      validate(schema, { name: '' }, {
         errorComponent: 'Users/Create',
-      })({ name: '' })
+      })
     )
 
     if (Exit.isFailure(exit) && Cause.isFailure(exit.cause)) {
@@ -368,6 +409,61 @@ describe('validateRequest', () => {
         const error = option.value as ValidationError
         expect(error.errors.email).toBe('Email required')
         expect(error.component).toBe('Auth/Register')
+      }
+    }
+  })
+
+  test('uses attributes option for :attribute placeholder', async () => {
+    const schema = S.Struct({
+      email: S.String.pipe(S.minLength(1, { message: () => 'The :attribute field is required' })),
+    })
+
+    const request = createMockRequest({
+      method: 'POST',
+      body: { email: '' },
+    })
+
+    const exit = await runWithRequestAsync(
+      validateRequest(schema, {
+        attributes: { email: 'email address' },
+      }),
+      request
+    )
+
+    if (Exit.isFailure(exit) && Cause.isFailure(exit.cause)) {
+      const option = Cause.failureOption(exit.cause)
+      if (option._tag === 'Some') {
+        const error = option.value as ValidationError
+        expect(error.errors.email).toBe('The email address field is required')
+      }
+    }
+  })
+
+  test('fails with ValidationError for malformed JSON body', async () => {
+    const schema = S.Struct({ name: S.String })
+
+    // Create a mock that throws when parsing JSON
+    const request: RequestContext = {
+      method: 'POST',
+      url: 'http://localhost/',
+      headers: new Headers({ 'Content-Type': 'application/json' }),
+      param: () => undefined,
+      params: () => ({}),
+      query: () => ({}),
+      json: async () => { throw new SyntaxError('Unexpected token') },
+      parseBody: async () => ({}),
+      header: (name: string) => name.toLowerCase() === 'content-type' ? 'application/json' : undefined,
+    }
+
+    const exit = await runWithRequestAsync(validateRequest(schema), request)
+
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit) && Cause.isFailure(exit.cause)) {
+      const option = Cause.failureOption(exit.cause)
+      if (option._tag === 'Some') {
+        const error = option.value as ValidationError
+        expect(error._tag).toBe('ValidationError')
+        expect(error.errors.form).toBe('Invalid JSON body')
       }
     }
   })
