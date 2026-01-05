@@ -5,7 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.2] - 2026-01-05
+## [0.1.3] - 2026-01-05
+
+### Added
+
+- `betterAuthFormAction` factory for streamlined form-based authentication (login/register)
+- `betterAuthLogoutAction` factory for logout with automatic cookie clearing
+- `loginAction`, `registerAction`, `logoutAction` options for `effectAuthRoutes` config
+- `guestActions` option for registering additional guest-only POST routes (2FA, forgot password, etc.)
+- `AuthActionEffect` type export for typing custom auth actions
+- Error mapping support to translate better-auth error codes to field-level validation errors
+- Dynamic `redirectTo` support (string or function) for auth actions
+- Automatic Set-Cookie header forwarding from better-auth responses
+- Fallback cookie clearing when better-auth doesn't return Set-Cookie headers
+- Comprehensive test coverage for auth form actions
+
+### Changed
+
+- `effectAuthRoutes` now supports unified auth route configuration (pages + actions in one call)
+- README now documents the full better-auth form action pattern with examples
+
+## [0.1.2] - 2026-01-04
 
 ### Changed
 

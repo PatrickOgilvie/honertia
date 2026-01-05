@@ -102,6 +102,11 @@ export {
   shareAuth,
   shareAuthMiddleware,
   effectAuthRoutes,
+  betterAuthFormAction,
+  betterAuthLogoutAction,
   loadUser,
   type AuthRoutesConfig,
+  type BetterAuthFormActionConfig,
+  type BetterAuthLogoutConfig,
+  type BetterAuthActionResult,
 } from './auth.js'

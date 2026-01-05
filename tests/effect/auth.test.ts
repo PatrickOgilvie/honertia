@@ -61,26 +61,43 @@ const createMockHonertia = (): HonertiaRenderer & {
 
 describe('RequireAuthLayer', () => {
   test('provides AuthUserService when user exists', async () => {
-    // RequireAuthLayer reads from an existing service
-    // In real usage, the bridge provides the service first
+    // RequireAuthLayer reads from an existing AuthUserService and passes it through
     const mockUser = createMockUser()
+    const baseLayer = Layer.succeed(AuthUserService, mockUser)
 
-    // Create a simple test that just verifies the user data
+    // Consume AuthUserService after applying RequireAuthLayer on top of base layer
     const program = Effect.gen(function* () {
-      return mockUser
+      return yield* AuthUserService
     })
 
-    const result = await Effect.runPromise(program)
+    // RequireAuthLayer is applied over the base layer
+    const result = await Effect.runPromise(
+      Effect.provide(program, Layer.provide(RequireAuthLayer, baseLayer))
+    )
+
     expect(result.user.id).toBe('user-123')
+    expect(result.session.token).toBe('test-token')
   })
 
-  test('fails when no AuthUserService is available', async () => {
+  test('fails with UnauthorizedError when no AuthUserService is available', async () => {
     // RequireAuthLayer checks serviceOption, which returns None when service isn't provided
+    const program = Effect.gen(function* () {
+      return yield* AuthUserService
+    })
+
     const exit = await Effect.runPromiseExit(
-      Effect.provide(AuthUserService, RequireAuthLayer)
+      Effect.provide(program, RequireAuthLayer)
     )
 
     expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit) && Cause.isFailure(exit.cause)) {
+      const option = Cause.failureOption(exit.cause)
+      if (option._tag === 'Some') {
+        const error = option.value as UnauthorizedError
+        expect(error._tag).toBe('UnauthorizedError')
+        expect(error.redirectTo).toBe('/login')
+      }
+    }
   })
 })
 
@@ -251,6 +268,554 @@ describe('shareAuth', () => {
     expect(mockHonertia.shared.auth).toEqual({
       user: null,
     })
+  })
+})
+
+describe('betterAuthFormAction', () => {
+  // Import the function we're testing
+  const { betterAuthFormAction } = require('../../src/effect/auth.js') as typeof import('../../src/effect/auth.js')
+  const { AuthService, RequestService } = require('../../src/effect/services.js') as typeof import('../../src/effect/services.js')
+  const S = require('effect').Schema
+
+  // Helper to create a mock request context for auth actions
+  const createAuthRequest = (options: {
+    method?: string
+    url?: string
+    body?: Record<string, unknown>
+    headers?: Record<string, string>
+  } = {}) => ({
+    method: options.method ?? 'POST',
+    url: options.url ?? 'http://localhost/login',
+    headers: new Headers({
+      'Content-Type': 'application/json',
+      ...options.headers,
+    }),
+    param: () => undefined,
+    params: () => ({}),
+    query: () => ({}),
+    json: async <T>() => options.body as T,
+    parseBody: async () => options.body ?? {},
+    header: (name: string) =>
+      name.toLowerCase() === 'content-type' ? 'application/json' : undefined,
+  })
+
+  // Mock auth client
+  const createMockAuth = (options: {
+    shouldSucceed?: boolean
+    error?: { code?: string; message?: string }
+    responseHeaders?: Headers
+  } = {}) => ({
+    api: {
+      signInEmail: async () => {
+        if (!options.shouldSucceed && options.error) {
+          throw options.error
+        }
+        return {
+          headers: options.responseHeaders ?? new Headers({
+            'set-cookie': 'better-auth.session_token=abc123; Path=/; HttpOnly',
+          }),
+        }
+      },
+      signUpEmail: async () => {
+        if (!options.shouldSucceed && options.error) {
+          throw options.error
+        }
+        return {
+          headers: options.responseHeaders ?? new Headers({
+            'set-cookie': 'better-auth.session_token=xyz789; Path=/; HttpOnly',
+          }),
+        }
+      },
+    },
+  })
+
+  test('returns 303 redirect on successful authentication', async () => {
+    const LoginSchema = S.Struct({
+      email: S.String,
+      password: S.String,
+    })
+
+    const action = betterAuthFormAction({
+      schema: LoginSchema,
+      errorComponent: 'Auth/Login',
+      redirectTo: '/dashboard',
+      call: (auth: any, input: any, request: Request) =>
+        auth.api.signInEmail({
+          body: { email: input.email, password: input.password },
+          request,
+          returnHeaders: true,
+        }),
+    })
+
+    const mockAuth = createMockAuth({ shouldSucceed: true })
+    const mockRequest = createAuthRequest({
+      body: { email: 'test@example.com', password: 'password123' },
+    })
+
+    const layer = Layer.mergeAll(
+      Layer.succeed(AuthService, mockAuth),
+      Layer.succeed(RequestService, mockRequest)
+    )
+
+    const exit = await Effect.runPromiseExit(Effect.provide(action, layer))
+
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      const response = exit.value as Response
+      expect(response.status).toBe(303)
+      expect(response.headers.get('Location')).toBe('/dashboard')
+    }
+  })
+
+  test('copies Set-Cookie headers from better-auth response', async () => {
+    const LoginSchema = S.Struct({
+      email: S.String,
+      password: S.String,
+    })
+
+    const sessionCookie = 'better-auth.session_token=secret123; Path=/; HttpOnly; SameSite=Lax'
+    const mockHeaders = new Headers()
+    mockHeaders.set('set-cookie', sessionCookie)
+
+    const action = betterAuthFormAction({
+      schema: LoginSchema,
+      errorComponent: 'Auth/Login',
+      redirectTo: '/',
+      call: async () => ({ headers: mockHeaders }),
+    })
+
+    const mockAuth = createMockAuth({ shouldSucceed: true })
+    const mockRequest = createAuthRequest({
+      body: { email: 'test@example.com', password: 'password123' },
+    })
+
+    const layer = Layer.mergeAll(
+      Layer.succeed(AuthService, mockAuth),
+      Layer.succeed(RequestService, mockRequest)
+    )
+
+    const exit = await Effect.runPromiseExit(Effect.provide(action, layer))
+
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      const response = exit.value as Response
+      expect(response.headers.get('set-cookie')).toContain('better-auth.session_token')
+    }
+  })
+
+  test('fails with ValidationError when schema validation fails', async () => {
+    const LoginSchema = S.Struct({
+      email: S.String.pipe(S.minLength(1)),
+      password: S.String.pipe(S.minLength(8)),
+    })
+
+    const action = betterAuthFormAction({
+      schema: LoginSchema,
+      errorComponent: 'Auth/Login',
+      redirectTo: '/',
+      call: async () => ({ headers: new Headers() }),
+    })
+
+    const mockAuth = createMockAuth({ shouldSucceed: true })
+    const mockRequest = createAuthRequest({
+      body: { email: '', password: 'short' }, // Invalid: empty email, short password
+    })
+
+    const layer = Layer.mergeAll(
+      Layer.succeed(AuthService, mockAuth),
+      Layer.succeed(RequestService, mockRequest)
+    )
+
+    const exit = await Effect.runPromiseExit(Effect.provide(action, layer))
+
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit) && Cause.isFailure(exit.cause)) {
+      const option = Cause.failureOption(exit.cause)
+      if (option._tag === 'Some') {
+        const error = option.value as any
+        expect(error._tag).toBe('ValidationError')
+        expect(error.component).toBe('Auth/Login')
+      }
+    }
+  })
+
+  test('calls errorMapper when better-auth returns an error', async () => {
+    const LoginSchema = S.Struct({
+      email: S.String,
+      password: S.String,
+    })
+
+    const errorMapper = (error: { code?: string; message?: string }) => {
+      switch (error.code) {
+        case 'INVALID_EMAIL_OR_PASSWORD':
+          return { email: 'Invalid email or password' }
+        case 'USER_NOT_FOUND':
+          return { email: 'No account found with this email' }
+        default:
+          return { form: error.message ?? 'Login failed' }
+      }
+    }
+
+    const action = betterAuthFormAction({
+      schema: LoginSchema,
+      errorComponent: 'Auth/Login',
+      redirectTo: '/',
+      errorMapper,
+      call: async () => {
+        throw { code: 'INVALID_EMAIL_OR_PASSWORD', message: 'Invalid credentials' }
+      },
+    })
+
+    const mockAuth = createMockAuth()
+    const mockRequest = createAuthRequest({
+      body: { email: 'test@example.com', password: 'wrongpassword' },
+    })
+
+    const layer = Layer.mergeAll(
+      Layer.succeed(AuthService, mockAuth),
+      Layer.succeed(RequestService, mockRequest)
+    )
+
+    const exit = await Effect.runPromiseExit(Effect.provide(action, layer))
+
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit) && Cause.isFailure(exit.cause)) {
+      const option = Cause.failureOption(exit.cause)
+      if (option._tag === 'Some') {
+        const error = option.value as any
+        expect(error._tag).toBe('ValidationError')
+        expect(error.errors.email).toBe('Invalid email or password')
+        expect(error.component).toBe('Auth/Login')
+      }
+    }
+  })
+
+  test('uses default error mapper when errorMapper not provided', async () => {
+    const LoginSchema = S.Struct({
+      email: S.String,
+      password: S.String,
+    })
+
+    const action = betterAuthFormAction({
+      schema: LoginSchema,
+      errorComponent: 'Auth/Login',
+      redirectTo: '/',
+      // No errorMapper provided - should use default
+      call: async () => {
+        throw { message: 'Something went wrong' }
+      },
+    })
+
+    const mockAuth = createMockAuth()
+    const mockRequest = createAuthRequest({
+      body: { email: 'test@example.com', password: 'password123' },
+    })
+
+    const layer = Layer.mergeAll(
+      Layer.succeed(AuthService, mockAuth),
+      Layer.succeed(RequestService, mockRequest)
+    )
+
+    const exit = await Effect.runPromiseExit(Effect.provide(action, layer))
+
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit) && Cause.isFailure(exit.cause)) {
+      const option = Cause.failureOption(exit.cause)
+      if (option._tag === 'Some') {
+        const error = option.value as any
+        expect(error._tag).toBe('ValidationError')
+        expect(error.errors.form).toBe('Something went wrong')
+      }
+    }
+  })
+
+  test('supports dynamic redirectTo as function', async () => {
+    const LoginSchema = S.Struct({
+      email: S.String,
+      password: S.String,
+      returnTo: S.optional(S.String),
+    })
+
+    const action = betterAuthFormAction({
+      schema: LoginSchema,
+      errorComponent: 'Auth/Login',
+      redirectTo: (input: { returnTo?: string }) => input.returnTo ?? '/home',
+      call: async () => ({ headers: new Headers() }),
+    })
+
+    const mockAuth = createMockAuth({ shouldSucceed: true })
+    const mockRequest = createAuthRequest({
+      body: { email: 'test@example.com', password: 'password123', returnTo: '/settings' },
+    })
+
+    const layer = Layer.mergeAll(
+      Layer.succeed(AuthService, mockAuth),
+      Layer.succeed(RequestService, mockRequest)
+    )
+
+    const exit = await Effect.runPromiseExit(Effect.provide(action, layer))
+
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      const response = exit.value as Response
+      expect(response.headers.get('Location')).toBe('/settings')
+    }
+  })
+
+  test('handles better-auth Response object', async () => {
+    const LoginSchema = S.Struct({
+      email: S.String,
+      password: S.String,
+    })
+
+    const action = betterAuthFormAction({
+      schema: LoginSchema,
+      errorComponent: 'Auth/Login',
+      redirectTo: '/',
+      call: async () => {
+        // Some better-auth methods return a full Response
+        return new Response(null, {
+          headers: { 'set-cookie': 'test-cookie=value; Path=/' },
+        })
+      },
+    })
+
+    const mockAuth = createMockAuth({ shouldSucceed: true })
+    const mockRequest = createAuthRequest({
+      body: { email: 'test@example.com', password: 'password123' },
+    })
+
+    const layer = Layer.mergeAll(
+      Layer.succeed(AuthService, mockAuth),
+      Layer.succeed(RequestService, mockRequest)
+    )
+
+    const exit = await Effect.runPromiseExit(Effect.provide(action, layer))
+
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      const response = exit.value as Response
+      expect(response.status).toBe(303)
+      expect(response.headers.get('set-cookie')).toContain('test-cookie')
+    }
+  })
+
+  test('handles better-auth Headers object', async () => {
+    const LoginSchema = S.Struct({
+      email: S.String,
+      password: S.String,
+    })
+
+    const action = betterAuthFormAction({
+      schema: LoginSchema,
+      errorComponent: 'Auth/Login',
+      redirectTo: '/',
+      call: async () => {
+        // Some better-auth methods return raw Headers
+        const headers = new Headers()
+        headers.set('set-cookie', 'session=xyz; Path=/')
+        return headers
+      },
+    })
+
+    const mockAuth = createMockAuth({ shouldSucceed: true })
+    const mockRequest = createAuthRequest({
+      body: { email: 'test@example.com', password: 'password123' },
+    })
+
+    const layer = Layer.mergeAll(
+      Layer.succeed(AuthService, mockAuth),
+      Layer.succeed(RequestService, mockRequest)
+    )
+
+    const exit = await Effect.runPromiseExit(Effect.provide(action, layer))
+
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      const response = exit.value as Response
+      expect(response.headers.get('set-cookie')).toContain('session=xyz')
+    }
+  })
+})
+
+describe('betterAuthLogoutAction', () => {
+  const { betterAuthLogoutAction } = require('../../src/effect/auth.js') as typeof import('../../src/effect/auth.js')
+  const { AuthService, RequestService } = require('../../src/effect/services.js') as typeof import('../../src/effect/services.js')
+
+  const createLogoutRequest = () => ({
+    method: 'POST',
+    url: 'http://localhost/logout',
+    headers: new Headers({
+      'Content-Type': 'application/json',
+      'Cookie': 'better-auth.session_token=abc123',
+    }),
+    param: () => undefined,
+    params: () => ({}),
+    query: () => ({}),
+    json: async <T>() => ({} as T),
+    parseBody: async () => ({}),
+    header: (name: string) => {
+      if (name.toLowerCase() === 'cookie') return 'better-auth.session_token=abc123'
+      return undefined
+    },
+  })
+
+  const createMockAuthForLogout = (options: { responseHeaders?: Headers } = {}) => ({
+    api: {
+      signOut: async () => {
+        return options.responseHeaders ?? new Headers()
+      },
+    },
+  })
+
+  test('returns 303 redirect to configured path', async () => {
+    const action = betterAuthLogoutAction({
+      redirectTo: '/login',
+    })
+
+    const mockAuth = createMockAuthForLogout()
+    const mockRequest = createLogoutRequest()
+
+    const layer = Layer.mergeAll(
+      Layer.succeed(AuthService, mockAuth),
+      Layer.succeed(RequestService, mockRequest)
+    )
+
+    const exit = await Effect.runPromiseExit(Effect.provide(action, layer))
+
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      const response = exit.value as Response
+      expect(response.status).toBe(303)
+      expect(response.headers.get('Location')).toBe('/login')
+    }
+  })
+
+  test('defaults to /login redirect when not specified', async () => {
+    const action = betterAuthLogoutAction({})
+
+    const mockAuth = createMockAuthForLogout()
+    const mockRequest = createLogoutRequest()
+
+    const layer = Layer.mergeAll(
+      Layer.succeed(AuthService, mockAuth),
+      Layer.succeed(RequestService, mockRequest)
+    )
+
+    const exit = await Effect.runPromiseExit(Effect.provide(action, layer))
+
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      const response = exit.value as Response
+      expect(response.headers.get('Location')).toBe('/login')
+    }
+  })
+
+  test('copies Set-Cookie headers from better-auth signOut response', async () => {
+    const logoutHeaders = new Headers()
+    logoutHeaders.set('set-cookie', 'better-auth.session_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT')
+
+    const action = betterAuthLogoutAction({
+      redirectTo: '/login',
+    })
+
+    const mockAuth = createMockAuthForLogout({ responseHeaders: logoutHeaders })
+    const mockRequest = createLogoutRequest()
+
+    const layer = Layer.mergeAll(
+      Layer.succeed(AuthService, mockAuth),
+      Layer.succeed(RequestService, mockRequest)
+    )
+
+    const exit = await Effect.runPromiseExit(Effect.provide(action, layer))
+
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      const response = exit.value as Response
+      expect(response.headers.get('set-cookie')).toContain('Expires=Thu, 01 Jan 1970')
+    }
+  })
+
+  test('clears default cookies when better-auth returns no Set-Cookie', async () => {
+    const action = betterAuthLogoutAction({
+      redirectTo: '/login',
+    })
+
+    const mockAuth = createMockAuthForLogout({ responseHeaders: new Headers() })
+    const mockRequest = createLogoutRequest()
+
+    const layer = Layer.mergeAll(
+      Layer.succeed(AuthService, mockAuth),
+      Layer.succeed(RequestService, mockRequest)
+    )
+
+    const exit = await Effect.runPromiseExit(Effect.provide(action, layer))
+
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      const response = exit.value as Response
+      const cookies = response.headers.get('set-cookie') ?? ''
+      // Should clear the default better-auth cookies
+      expect(cookies).toContain('better-auth.session_token=')
+      expect(cookies).toContain('Expires=Thu, 01 Jan 1970')
+    }
+  })
+
+  test('clears custom cookie names when specified', async () => {
+    const action = betterAuthLogoutAction({
+      redirectTo: '/login',
+      cookieNames: ['my-app-session', 'my-app-refresh'],
+    })
+
+    const mockAuth = createMockAuthForLogout({ responseHeaders: new Headers() })
+    const mockRequest = createLogoutRequest()
+
+    const layer = Layer.mergeAll(
+      Layer.succeed(AuthService, mockAuth),
+      Layer.succeed(RequestService, mockRequest)
+    )
+
+    const exit = await Effect.runPromiseExit(Effect.provide(action, layer))
+
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      const response = exit.value as Response
+      const cookies = response.headers.get('set-cookie') ?? ''
+      expect(cookies).toContain('my-app-session=')
+      expect(cookies).toContain('my-app-refresh=')
+    }
+  })
+
+  test('succeeds even when better-auth signOut fails', async () => {
+    const action = betterAuthLogoutAction({
+      redirectTo: '/login',
+    })
+
+    // Auth that throws on signOut
+    const failingAuth = {
+      api: {
+        signOut: async () => {
+          throw new Error('Session not found')
+        },
+      },
+    }
+
+    const mockRequest = createLogoutRequest()
+
+    const layer = Layer.mergeAll(
+      Layer.succeed(AuthService, failingAuth),
+      Layer.succeed(RequestService, mockRequest)
+    )
+
+    const exit = await Effect.runPromiseExit(Effect.provide(action, layer))
+
+    // Should still succeed and redirect
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      const response = exit.value as Response
+      expect(response.status).toBe(303)
+      expect(response.headers.get('Location')).toBe('/login')
+    }
   })
 })
 

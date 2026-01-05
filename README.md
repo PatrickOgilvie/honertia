@@ -131,13 +131,17 @@ import type { Env } from './types'
 import { effectRoutes } from 'honertia/effect'
 import { effectAuthRoutes, RequireAuthLayer } from 'honertia/auth'
 import { showDashboard, listProjects, createProject, showProject, deleteProject } from './actions'
+import { loginUser, registerUser, logoutUser } from './actions/auth'
 
 export function registerRoutes(app: Hono<Env>) {
-  // Auth routes (login, register, logout, API handler) wired to better-auth.
-  // CORS for /api/auth/* can be enabled via the `cors` option (see below).
+  // Auth routes: pages, form actions, logout, and API handler in one place.
   effectAuthRoutes(app, {
     loginComponent: 'Auth/Login',
     registerComponent: 'Auth/Register',
+    // Form actions (automatically wrapped with RequireGuestLayer)
+    loginAction: loginUser,
+    registerAction: registerUser,
+    logoutAction: logoutUser,
   })
 
   // Effect routes give you typed, DI-friendly handlers (no direct Hono ctx).
@@ -807,18 +811,36 @@ const user = yield* currentUser       // AuthUser | null
 ### Built-in Auth Routes
 
 ```typescript
-import { effectAuthRoutes } from 'honertia'
+import { effectAuthRoutes } from 'honertia/auth'
+import { loginUser, registerUser, logoutUser, verify2FA, forgotPassword } from './actions/auth'
 
 effectAuthRoutes(app, {
+  // Page routes
   loginPath: '/login',           // GET: show login page
   registerPath: '/register',     // GET: show register page
   logoutPath: '/logout',         // POST: logout and redirect
   apiPath: '/api/auth',          // Better-auth API handler
   logoutRedirect: '/login',
+  loginRedirect: '/',
   loginComponent: 'Auth/Login',
   registerComponent: 'Auth/Register',
+
+  // Form actions (automatically wrapped with RequireGuestLayer)
+  loginAction: loginUser,        // POST /login
+  registerAction: registerUser,  // POST /register
+  logoutAction: logoutUser,      // POST /logout (overrides default)
+
+  // Extended auth flows (all guest-only POST routes)
+  guestActions: {
+    '/login/2fa': verify2FA,
+    '/forgot-password': forgotPassword,
+  },
 })
 ```
+
+All `loginAction`, `registerAction`, and `guestActions` are automatically wrapped with
+`RequireGuestLayer`, so authenticated users will be redirected. The `logoutAction` is
+not wrapped (logout should work regardless of auth state).
 
 To enable CORS for the auth API handler (`/api/auth/*`), pass a `cors` config.
 By default, no CORS headers are added (recommended when your UI and API share the same origin).
@@ -836,6 +858,111 @@ effectAuthRoutes(app, {
 
 This sets the appropriate `Access-Control-*` headers and handles `OPTIONS` preflight for the auth API routes.
 Always keep the `origin` list tight; avoid `'*'` for auth endpoints, especially with `credentials: true`.
+
+### Better-auth Form Actions
+
+Honertia provides `betterAuthFormAction` to handle the common pattern of form-based
+authentication: validate input, call better-auth, map errors to field-level messages,
+and redirect on success. This bridges better-auth's JSON responses with Inertia's
+form handling conventions.
+
+```typescript
+// src/actions/auth/login.ts
+import { betterAuthFormAction } from 'honertia/auth'
+import { Schema as S } from 'effect'
+import { requiredString, email } from 'honertia'
+import type { Auth } from './lib/auth' // your better-auth instance type
+
+const LoginSchema = S.Struct({
+  email,
+  password: requiredString,
+})
+
+// Map better-auth error codes to user-friendly field errors
+const mapLoginError = (error: { code?: string; message?: string }) => {
+  switch (error.code) {
+    case 'INVALID_EMAIL_OR_PASSWORD':
+      return { email: 'Invalid email or password' }
+    case 'USER_NOT_FOUND':
+      return { email: 'No account found with this email' }
+    case 'INVALID_PASSWORD':
+      return { password: 'Incorrect password' }
+    default:
+      return { email: error.message ?? 'Login failed' }
+  }
+}
+
+export const loginUser = betterAuthFormAction({
+  schema: LoginSchema,
+  errorComponent: 'Auth/Login',
+  redirectTo: '/',
+  errorMapper: mapLoginError,
+  // `auth` is the better-auth instance from AuthService
+  // `input` is the validated form data
+  // `request` is the original Request (needed for session cookies)
+  call: (auth: Auth, input, request) =>
+    auth.api.signInEmail({
+      body: { email: input.email, password: input.password },
+      request,
+      returnHeaders: true,
+    }),
+})
+```
+
+```typescript
+// src/actions/auth/register.ts
+import { betterAuthFormAction } from 'honertia/auth'
+import { Schema as S } from 'effect'
+import { requiredString, email, password } from 'honertia'
+import type { Auth } from './lib/auth'
+
+const RegisterSchema = S.Struct({
+  name: requiredString,
+  email,
+  password: password({ min: 8, letters: true, numbers: true }),
+})
+
+const mapRegisterError = (error: { code?: string; message?: string }) => {
+  switch (error.code) {
+    case 'USER_ALREADY_EXISTS':
+      return { email: 'An account with this email already exists' }
+    case 'PASSWORD_TOO_SHORT':
+      return { password: 'Password must be at least 8 characters' }
+    default:
+      return { email: error.message ?? 'Registration failed' }
+  }
+}
+
+export const registerUser = betterAuthFormAction({
+  schema: RegisterSchema,
+  errorComponent: 'Auth/Register',
+  redirectTo: '/',
+  errorMapper: mapRegisterError,
+  call: (auth: Auth, input, request) =>
+    auth.api.signUpEmail({
+      body: { name: input.name, email: input.email, password: input.password },
+      request,
+      returnHeaders: true,
+    }),
+})
+```
+
+For logout, use the simpler `betterAuthLogoutAction`:
+
+```typescript
+// src/actions/auth/logout.ts
+import { betterAuthLogoutAction } from 'honertia/auth'
+
+export const logoutUser = betterAuthLogoutAction({
+  redirectTo: '/login',
+})
+```
+
+**How errors are handled:**
+
+1. **Schema validation fails** → Re-renders `errorComponent` with field errors from Effect Schema
+2. **better-auth returns an error** → Calls your `errorMapper`, then re-renders `errorComponent` with those errors
+3. **Success** → Sets session cookies from better-auth's response headers, then 303 redirects to `redirectTo`
 
 ## Action Factories
 
