@@ -1321,14 +1321,14 @@ declare module 'honertia/effect' {
 }
 ```
 
-Once augmented, `DatabaseService` and `AuthService` will be properly typed:
+Then use `DatabaseService` and `AuthService` to get typed access:
 
 ```typescript
-// Before augmentation: db is `unknown`, requires casting
-const db = (yield* DatabaseService) as Database
+import { DatabaseService, AuthService } from 'honertia/effect'
 
-// After augmentation: db is typed as `Database`
+// DatabaseService respects your module augmentation
 const db = yield* DatabaseService
+const auth = yield* AuthService
 const projects = yield* Effect.tryPromise(() =>
   db.query.projects.findMany() // ✅ Full type safety
 )

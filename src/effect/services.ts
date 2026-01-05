@@ -4,7 +4,7 @@
  * Service tags for dependency injection via Effect.
  */
 
-import { Context, Effect } from 'effect'
+import { Context } from 'effect'
 
 /**
  * Augmentable interface for database type.
@@ -20,10 +20,10 @@ import { Context, Effect } from 'effect'
  * }
  * ```
  *
- * Then `DatabaseService` will be typed as your `Database` type.
+ * Then use the `DatabaseService` tag to get your typed database.
  */
 export interface HonertiaDatabaseType {
-  type: unknown
+  [key: string]: unknown
 }
 
 /**
@@ -40,30 +40,30 @@ export interface HonertiaDatabaseType {
  * ```
  */
 export interface HonertiaAuthType {
-  type: unknown
+  [key: string]: unknown
 }
 
 /**
  * Database Service - Generic database client
- *
- * By default typed as `unknown`. Use module augmentation on
- * `HonertiaDatabaseType` to provide your database type.
  */
-export class DatabaseService extends Context.Tag('honertia/Database')<
+const DatabaseService_base: Context.TagClass<
   DatabaseService,
+  'honertia/Database',
   HonertiaDatabaseType['type']
->() {}
+> = Context.Tag('honertia/Database')<DatabaseService, HonertiaDatabaseType['type']>()
+
+export class DatabaseService extends DatabaseService_base {}
 
 /**
  * Auth Service - Better-auth instance
- *
- * By default typed as `unknown`. Use module augmentation on
- * `HonertiaAuthType` to provide your auth type.
  */
-export class AuthService extends Context.Tag('honertia/Auth')<
+const AuthService_base: Context.TagClass<
   AuthService,
+  'honertia/Auth',
   HonertiaAuthType['type']
->() {}
+> = Context.Tag('honertia/Auth')<AuthService, HonertiaAuthType['type']>()
+
+export class AuthService extends AuthService_base {}
 
 /**
  * Authenticated User - Session with user data

@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] - 2026-01-05
+
+### Fixed
+
+- Module augmentation now actually works in emitted `.d.ts` files; `DatabaseService` and `AuthService` preserve `HonertiaDatabaseType['type']` and `HonertiaAuthType['type']`.
+- Module augmentation no longer conflicts with interface merging by using index-signature placeholders and if not we will move onto something else lol.
+
+### Changed
+
+- `DatabaseService` and `AuthService` now expose the augmented types directly (no extra wrapper needed - probably).
+
+### Removed
+
+- `TypedDatabase` and `TypedAuth` alias exports. Hopefully this preserves the clean `yield* DatabaseService` that I was willing to sacrifice everything for. 
+
 ## [0.1.8] - 2026-01-05
 
 ### Fixed
