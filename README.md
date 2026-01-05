@@ -1312,11 +1312,11 @@ import type { auth } from '~/lib/auth'
 
 declare module 'honertia/effect' {
   interface HonertiaDatabaseType {
-    db: Database // Your Drizzle/Prisma/Kysely type
+    type: Database // Your Drizzle/Prisma/Kysely type
   }
 
   interface HonertiaAuthType {
-    auth: typeof auth // Your better-auth instance type
+    type: typeof auth // Your better-auth instance type
   }
 }
 ```
