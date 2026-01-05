@@ -26,6 +26,7 @@ bun add honertia
 ### Demo
 
 Deploy the honertia-worker-demo repo to Cloudflare
+
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/PatrickOgilvie/honertia-worker-demo)
 
 ## Quick Start
