@@ -41,6 +41,26 @@ const createMockUser = (overrides: Partial<AuthUser['user']> = {}): AuthUser => 
   },
 })
 
+type AuthUserWithRole = AuthUser & {
+  user: AuthUser['user'] & { role: 'admin' | 'user' }
+}
+
+const createMockUserWithRole = (
+  role: AuthUserWithRole['user']['role']
+): AuthUserWithRole => {
+  const base = createMockUser()
+  return {
+    ...base,
+    user: {
+      ...base.user,
+      role,
+    },
+  }
+}
+
+const hasRole = (auth: AuthUser): auth is AuthUserWithRole =>
+  'role' in (auth.user as Record<string, unknown>)
+
 // Mock database
 const createMockDb = () => ({
   insert: (table: string) => ({
@@ -72,13 +92,20 @@ const createMockRequest = (options: {
     name.toLowerCase() === 'content-type' ? 'application/json' : undefined,
 })
 
+const assertResponse = (value: Response | Redirect): Response => {
+  if (!(value instanceof Response)) {
+    throw new Error('Expected Response')
+  }
+  return value
+}
+
 describe('action', () => {
   test('wraps an Effect and returns it unchanged', async () => {
     const myAction = action(
       Effect.succeed(new Response('Hello World'))
     )
 
-    const response = await Effect.runPromise(myAction)
+    const response = assertResponse(await Effect.runPromise(myAction))
     const text = await response.text()
 
     expect(text).toBe('Hello World')
@@ -95,7 +122,7 @@ describe('action', () => {
     const mockDb = { name: 'test-db' }
     const layer = Layer.succeed(DatabaseService, mockDb)
 
-    const response = await Effect.runPromise(Effect.provide(myAction, layer))
+    const response = assertResponse(await Effect.runPromise(Effect.provide(myAction, layer)))
     const json = await response.json()
 
     expect(json).toEqual({ name: 'test-db' })
@@ -133,7 +160,7 @@ describe('action', () => {
     const mockUser = createMockUser({ name: 'Jane' })
     const layer = Layer.succeed(AuthUserService, mockUser)
 
-    const response = await Effect.runPromise(Effect.provide(myAction, layer))
+    const response = assertResponse(await Effect.runPromise(Effect.provide(myAction, layer)))
     const text = await response.text()
 
     expect(text).toBe('Hello Jane')
@@ -232,12 +259,9 @@ describe('authorize', () => {
 
   test('can check user roles', async () => {
     // Simulate a user with role (extending the mock)
-    const userWithRole = {
-      ...createMockUser(),
-      role: 'admin' as const,
-    }
+    const userWithRole = createMockUserWithRole('admin')
 
-    const effect = authorize((u: any) => u.role === 'admin')
+    const effect = authorize((u) => hasRole(u) && u.user.role === 'admin')
 
     const layer = Layer.succeed(AuthUserService, userWithRole)
 
@@ -255,13 +279,12 @@ describe('dbTransaction', () => {
       },
     }
 
-    const effect = dbTransaction(async (tx: any) => {
-      const result = await tx.insert()
+    const effect = dbTransaction(mockDb, async (tx) => {
+      const result = await (tx as { insert: () => Promise<{ id: number }> }).insert()
       return { inserted: result.id }
     })
 
-    const layer = Layer.succeed(DatabaseService, mockDb)
-    const result = await Effect.runPromise(Effect.provide(effect, layer))
+    const result = await Effect.runPromise(effect)
 
     expect(result).toEqual({ inserted: 1 })
   })
@@ -279,12 +302,11 @@ describe('dbTransaction', () => {
       },
     }
 
-    const effect = dbTransaction(async () => {
+    const effect = dbTransaction(mockDb, async () => {
       throw new Error('Operation failed')
     })
 
-    const layer = Layer.succeed(DatabaseService, mockDb)
-    const exit = await Effect.runPromiseExit(Effect.provide(effect, layer))
+    const exit = await Effect.runPromiseExit(effect)
 
     expect(Exit.isFailure(exit)).toBe(true)
     expect(rolledBack).toBe(true)
@@ -295,12 +317,11 @@ describe('dbTransaction', () => {
       transaction: async <T>(fn: (tx: unknown) => Promise<T>) => fn({}),
     }
 
-    const effect = dbTransaction(async () => {
+    const effect = dbTransaction(mockDb, async () => {
       throw 'string error'
     })
 
-    const layer = Layer.succeed(DatabaseService, mockDb)
-    const exit = await Effect.runPromiseExit(Effect.provide(effect, layer))
+    const exit = await Effect.runPromiseExit(effect)
 
     if (Exit.isFailure(exit) && Cause.isFailure(exit.cause)) {
       const option = Cause.failureOption(exit.cause)
@@ -427,7 +448,7 @@ describe('Composable Action Patterns', () => {
       })
     )
 
-    const response = await Effect.runPromise(publicAction)
+    const response = assertResponse(await Effect.runPromise(publicAction))
     const text = await response.text()
 
     expect(text).toBe('Public content')

@@ -91,20 +91,19 @@ export function authorize(
  * Automatically rolls back on any failure.
  *
  * @example
- * yield* dbTransaction(async (tx) => {
+ * const db = yield* DatabaseService
+ * yield* dbTransaction(db, async (tx) => {
  *   await tx.insert(users).values({ name: 'Alice' })
  *   await tx.update(accounts).set({ balance: 100 }).where(eq(accounts.userId, id))
  *   return { success: true }
  * })
  */
-export function dbTransaction<T>(
+export function dbTransaction<DB extends { transaction: (fn: (tx: unknown) => Promise<T>) => Promise<T> }, T>(
+  db: DB,
   operations: (tx: unknown) => Promise<T>
-): Effect.Effect<T, Error, DatabaseService> {
-  return Effect.gen(function* () {
-    const db = yield* DatabaseService
-    return yield* Effect.tryPromise({
-      try: (): Promise<T> => (db as any).transaction(operations),
-      catch: (error) => error instanceof Error ? error : new Error(String(error)),
-    })
+): Effect.Effect<T, Error> {
+  return Effect.tryPromise({
+    try: (): Promise<T> => db.transaction(operations),
+    catch: (error) => error instanceof Error ? error : new Error(String(error)),
   })
 }

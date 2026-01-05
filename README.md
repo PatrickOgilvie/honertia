@@ -1174,12 +1174,14 @@ export const searchProjects = action(
 
 #### `dbTransaction` - Database Transactions
 
-Run multiple database operations in a transaction with automatic rollback on failure:
+Run multiple database operations in a transaction with automatic rollback on failure. The database instance is passed explicitly to keep the dependency visible and consistent with other service patterns:
 
 ```typescript
-import { dbTransaction } from 'honertia/effect'
+import { DatabaseService, dbTransaction } from 'honertia/effect'
 
-yield* dbTransaction(async (tx) => {
+const db = yield* DatabaseService
+
+yield* dbTransaction(db, async (tx) => {
   await tx.insert(users).values({ name: 'Alice', email: 'alice@example.com' })
   await tx.update(accounts).set({ balance: 100 }).where(eq(accounts.userId, id))
   // If any operation fails, the entire transaction rolls back
