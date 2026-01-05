@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-01-05
+
+### Added
+
+- `action` wrapper for Effect-based actions
+- `authorize` helper for authentication and authorization checks
+- `dbTransaction` helper for database transactions with automatic rollback
+
+### Changed
+
+- Actions are now composed via `yield*` helpers/services instead of factory functions
+
+### Removed
+
+- Action factories `effectAction`, `dbAction`, `authAction`, `simpleAction`
+- Action helpers `injectUser`, `dbOperation`, `prepareData`, `preparedAction`
+
 ## [0.1.3] - 2026-01-05
 
 ### Added

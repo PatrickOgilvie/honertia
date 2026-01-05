@@ -56,16 +56,11 @@ export {
   errorToResponse,
 } from './handler.js'
 
-// Action Factories
+// Action Composables
 export {
-  effectAction,
-  dbAction,
-  authAction,
-  simpleAction,
-  injectUser,
-  dbOperation,
-  prepareData,
-  preparedAction,
+  action,
+  authorize,
+  dbTransaction,
 } from './action.js'
 
 // Response Helpers

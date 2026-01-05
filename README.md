@@ -433,47 +433,55 @@ vite.hmrHead()  // HMR preamble script tags for React Fast Refresh
 
 ### Effect-Based Handlers
 
-Route handlers are Effect computations that return `Response | Redirect`:
+Route handlers are Effect computations that return `Response | Redirect`. Actions are fully composable - you opt-in to features by yielding services:
 
 ```typescript
 import { Effect } from 'effect'
 import {
+  action,
+  authorize,
+  validateRequest,
   DatabaseService,
-  AuthUserService,
   render,
   redirect,
-} from 'honertia'
+} from 'honertia/effect'
 
-// Simple page render
-export const showDashboard = Effect.gen(function* () {
-  const db = yield* DatabaseService
-  const user = yield* AuthUserService
+// Simple page render with auth
+export const showDashboard = action(
+  Effect.gen(function* () {
+    const auth = yield* authorize()
+    const db = yield* DatabaseService
 
-  const projects = yield* Effect.tryPromise(() =>
-    db.query.projects.findMany({
-      where: eq(schema.projects.userId, user.user.id),
-      limit: 5,
+    const projects = yield* Effect.tryPromise(() =>
+      db.query.projects.findMany({
+        where: eq(schema.projects.userId, auth.user.id),
+        limit: 5,
+      })
+    )
+
+    return yield* render('Dashboard/Index', { projects })
+  })
+)
+
+// Form submission with permissions, validation, and redirect
+export const createProject = action(
+  Effect.gen(function* () {
+    const auth = yield* authorize((a) => a.user.role === 'admin')
+    const input = yield* validateRequest(CreateProjectSchema, {
+      errorComponent: 'Projects/Create',
     })
-  )
+    const db = yield* DatabaseService
 
-  return yield* render('Dashboard/Index', { projects })
-})
+    yield* Effect.tryPromise(() =>
+      db.insert(schema.projects).values({
+        ...input,
+        userId: auth.user.id,
+      })
+    )
 
-// Form submission with redirect
-export const createProject = Effect.gen(function* () {
-  const db = yield* DatabaseService
-  const user = yield* AuthUserService
-  const input = yield* validateRequest(CreateProjectSchema)
-
-  yield* Effect.tryPromise(() =>
-    db.insert(schema.projects).values({
-      ...input,
-      userId: user.user.id,
-    })
-  )
-
-  return yield* redirect('/projects')
-})
+    return yield* redirect('/projects')
+  })
+)
 ```
 
 ### Services
@@ -964,42 +972,219 @@ export const logoutUser = betterAuthLogoutAction({
 2. **better-auth returns an error** → Calls your `errorMapper`, then re-renders `errorComponent` with those errors
 3. **Success** → Sets session cookies from better-auth's response headers, then 303 redirects to `redirectTo`
 
-## Action Factories
+## Anatomy of an Action
 
-For common patterns, use action factories:
+Actions in Honertia are fully composable Effect computations. Instead of using different action factories for different combinations of features, you opt-in to exactly what you need by yielding services and helpers inside your action.
+
+This design is inspired by Laravel's [laravel-actions](https://laravelactions.com/) package, where you opt-in to capabilities by adding methods to your action class. In Honertia, you opt-in by yielding services - the order of your `yield*` statements determines the execution order.
+
+### The `action` Wrapper
+
+The `action` function is a semantic wrapper that marks an Effect as an action:
 
 ```typescript
-import { effectAction, dbAction, authAction } from 'honertia'
+import { Effect } from 'effect'
+import { action } from 'honertia/effect'
 
-// effectAction: validation + custom handler
-export const updateSettings = effectAction(
-  SettingsSchema,
-  (input) => Effect.gen(function* () {
-    yield* saveSettings(input)
-    return yield* redirect('/settings')
-  }),
-  { errorComponent: 'Settings/Edit' }
-)
-
-// dbAction: validation + db + auth
-export const createProject = dbAction(
-  CreateProjectSchema,
-  (input, { db, user }) => Effect.gen(function* () {
-    yield* Effect.tryPromise(() =>
-      db.insert(projects).values({ ...input, userId: user.user.id })
-    )
-    return yield* redirect('/projects')
-  }),
-  { errorComponent: 'Projects/Create' }
-)
-
-// authAction: just requires auth
-export const showDashboard = authAction((user) =>
+export const myAction = action(
   Effect.gen(function* () {
-    const data = yield* fetchDashboardData(user)
-    return yield* render('Dashboard', data)
+    // Your action logic here
+    return new Response('OK')
   })
 )
+```
+
+It's intentionally minimal - all the power comes from what you yield inside.
+
+### Composable Helpers
+
+#### `authorize` - Authentication & Authorization
+
+Opt-in to authentication and authorization checks. Returns the authenticated user, fails with `UnauthorizedError` if no user is present, and fails with `ForbiddenError` if the check returns `false`.
+
+```typescript
+import { authorize } from 'honertia/effect'
+
+// Just require authentication (any logged-in user)
+const auth = yield* authorize()
+
+// Require a specific role
+const auth = yield* authorize((a) => a.user.role === 'admin')
+
+// Require resource ownership
+const auth = yield* authorize((a) => a.user.id === project.userId)
+```
+
+If the check function returns `false`, the action fails immediately with a `ForbiddenError`.
+
+#### `validateRequest` - Schema Validation
+
+Opt-in to request validation using Effect Schema:
+
+```typescript
+import { Schema as S } from 'effect'
+import { validateRequest, requiredString } from 'honertia/effect'
+
+const input = yield* validateRequest(
+  S.Struct({ name: requiredString, description: S.optional(S.String) }),
+  { errorComponent: 'Projects/Create' }
+)
+// input is fully typed: { name: string, description?: string }
+```
+
+On validation failure, re-renders `errorComponent` with field-level errors.
+
+#### `DatabaseService` - Database Access
+
+Opt-in to database access:
+
+```typescript
+import { DatabaseService } from 'honertia/effect'
+
+const db = yield* DatabaseService
+const projects = yield* Effect.tryPromise(() =>
+  db.query.projects.findMany()
+)
+```
+
+#### `render` / `redirect` - Responses
+
+Return responses from your action:
+
+```typescript
+import { render, redirect } from 'honertia/effect'
+
+// Render a page
+return yield* render('Projects/Index', { projects })
+
+// Redirect after mutation
+return yield* redirect('/projects')
+```
+
+### Building an Action
+
+Here's how these composables work together:
+
+```typescript
+import { Effect, Schema as S } from 'effect'
+import {
+  action,
+  authorize,
+  validateRequest,
+  DatabaseService,
+  redirect,
+  requiredString,
+} from 'honertia/effect'
+
+const CreateProjectSchema = S.Struct({
+  name: requiredString,
+  description: S.optional(S.String),
+})
+
+export const createProject = action(
+  Effect.gen(function* () {
+    // 1. Authorization - fail fast if not allowed
+    const auth = yield* authorize((a) => a.user.role === 'author')
+
+    // 2. Validation - parse and validate request body
+    const input = yield* validateRequest(CreateProjectSchema, {
+      errorComponent: 'Projects/Create',
+    })
+
+    // 3. Database - perform the mutation
+    const db = yield* DatabaseService
+    yield* Effect.tryPromise(() =>
+      db.insert(projects).values({
+        ...input,
+        userId: auth.user.id,
+      })
+    )
+
+    // 4. Response - redirect on success
+    return yield* redirect('/projects')
+  })
+)
+```
+
+### Execution Order Matters
+
+The order you yield services determines when they execute:
+
+```typescript
+// Authorization BEFORE validation (recommended for mutations)
+// Don't waste cycles validating if user can't perform the action
+const auth = yield* authorize((a) => a.user.role === 'admin')
+const input = yield* validateRequest(schema)
+
+// Validation BEFORE authorization (when you need input for auth check)
+const input = yield* validateRequest(schema)
+const auth = yield* authorize((a) => a.user.id === input.ownerId)
+```
+
+### Type Safety
+
+Effect tracks all service requirements at the type level. Your action's type signature shows exactly what it needs:
+
+```typescript
+// This action requires: RequestService, DatabaseService
+export const createProject: Effect.Effect<
+  Response | Redirect,
+  ValidationError | UnauthorizedError | ForbiddenError | Error,
+  RequestService | DatabaseService
+>
+```
+
+The compiler ensures all required services are provided when the action runs.
+Note: `authorize` uses an optional `AuthUserService`, so it won't appear in the required service list unless you `yield* AuthUserService` directly or provide `RequireAuthLayer` explicitly.
+
+### Minimal Actions
+
+Not every action needs all features. Use only what you need:
+
+```typescript
+// Public page - no auth, no validation
+export const showAbout = action(
+  Effect.gen(function* () {
+    return yield* render('About', {})
+  })
+)
+
+// Read-only authenticated page
+export const showDashboard = action(
+  Effect.gen(function* () {
+    const auth = yield* authorize()
+    const db = yield* DatabaseService
+    const stats = yield* fetchStats(db, auth)
+    return yield* render('Dashboard', { stats })
+  })
+)
+
+// API endpoint with just validation
+export const searchProjects = action(
+  Effect.gen(function* () {
+    const { query } = yield* validateRequest(S.Struct({ query: S.String }))
+    const db = yield* DatabaseService
+    const results = yield* search(db, query)
+    return yield* json({ results })
+  })
+)
+```
+
+### Helper Utilities
+
+#### `dbTransaction` - Database Transactions
+
+Run multiple database operations in a transaction with automatic rollback on failure:
+
+```typescript
+import { dbTransaction } from 'honertia/effect'
+
+yield* dbTransaction(async (tx) => {
+  await tx.insert(users).values({ name: 'Alice', email: 'alice@example.com' })
+  await tx.update(accounts).set({ balance: 100 }).where(eq(accounts.userId, id))
+  // If any operation fails, the entire transaction rolls back
+  return { success: true }
+})
 ```
 
 ## React Integration
