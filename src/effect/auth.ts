@@ -137,8 +137,15 @@ export function shareAuthMiddleware<E extends Env>(): MiddlewareHandler<E> {
 /**
  * An auth action effect that returns a Response.
  * Used for loginAction, registerAction, logoutAction, and guestActions.
+ *
+ * The default service requirement is `RequestService | AuthService` because
+ * that's what the factory functions (betterAuthFormAction, betterAuthLogoutAction)
+ * return, and effectAuthRoutes provides these services automatically.
  */
-export type AuthActionEffect<R = never, E extends Error = Error> = EffectHandler<R, E>
+export type AuthActionEffect<
+  R = RequestService | AuthService,
+  E extends Error = Error
+> = EffectHandler<R, E>
 
 /**
  * Configuration for auth routes.

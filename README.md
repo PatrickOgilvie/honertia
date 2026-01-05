@@ -473,11 +473,31 @@ const auth = yield* authorize()
 // Require a specific role
 const auth = yield* authorize((a) => a.user.role === 'admin')
 
-// Require resource ownership
+// Require resource ownership (see caveat below)
 const auth = yield* authorize((a) => a.user.id === project.userId)
 ```
 
 If the check function returns `false`, the action fails immediately with a `ForbiddenError`.
+
+> **Query-level vs authorize() checks**
+>
+> Use `authorize()` for:
+> - Role/permission checks before any DB work: `authorize((a) => a.user.role === 'admin')`
+> - Checks that can't be expressed in SQL
+>
+> For resource ownership, prefer query-level filtering:
+> ```typescript
+> // Better: single query, no information leakage
+> const auth = yield* authorize()
+> const project = yield* Effect.tryPromise(() =>
+>   db.query.projects.findFirst({
+>     where: and(eq(projects.id, id), eq(projects.userId, auth.user.id)),
+>   })
+> )
+> if (!project) return yield* notFound('Project')
+> ```
+>
+> This approach is more secure (no difference between "not found" and "not yours") and more efficient (single query).
 
 #### `validateRequest` - Schema Validation
 
@@ -1277,6 +1297,41 @@ const Layout: HonertiaPage<Props> = ({ auth, children }) => {
     </div>
   )
 }
+```
+
+## TypeScript
+
+### Typed Services via Module Augmentation
+
+By default, `DatabaseService` and `AuthService` are typed as `unknown` since Honertia is database and auth agnostic. You can provide your specific types via module augmentation:
+
+```typescript
+// src/types.d.ts (or any .d.ts file in your project)
+import type { Database } from '~/db/db'
+import type { auth } from '~/lib/auth'
+
+declare module 'honertia/effect' {
+  interface HonertiaDatabaseType {
+    db: Database // Your Drizzle/Prisma/Kysely type
+  }
+
+  interface HonertiaAuthType {
+    auth: typeof auth // Your better-auth instance type
+  }
+}
+```
+
+Once augmented, `DatabaseService` and `AuthService` will be properly typed:
+
+```typescript
+// Before augmentation: db is `unknown`, requires casting
+const db = (yield* DatabaseService) as Database
+
+// After augmentation: db is typed as `Database`
+const db = yield* DatabaseService
+const projects = yield* Effect.tryPromise(() =>
+  db.query.projects.findMany() // ✅ Full type safety
+)
 ```
 
 ## Architecture Notes

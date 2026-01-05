@@ -16,6 +16,8 @@ export {
   type HonertiaRenderer,
   type RequestContext,
   type ResponseFactory,
+  type HonertiaDatabaseType,
+  type HonertiaAuthType,
 } from './services.js'
 
 // Errors

@@ -7,19 +7,66 @@
 import { Context, Effect } from 'effect'
 
 /**
+ * Augmentable interface for database type.
+ * Users can extend this via module augmentation:
+ *
+ * @example
+ * ```typescript
+ * // In your project's types.d.ts or similar
+ * declare module 'honertia/effect' {
+ *   interface HonertiaDatabaseType {
+ *     db: Database // Your database type (Drizzle, Prisma, Kysely, etc.)
+ *   }
+ * }
+ * ```
+ *
+ * Then `DatabaseService` will be typed as your `Database` type.
+ */
+export interface HonertiaDatabaseType {
+  db?: unknown
+}
+
+/**
+ * Augmentable interface for auth type.
+ * Users can extend this via module augmentation:
+ *
+ * @example
+ * ```typescript
+ * declare module 'honertia/effect' {
+ *   interface HonertiaAuthType {
+ *     auth: ReturnType<typeof betterAuth> // Your auth instance type
+ *   }
+ * }
+ * ```
+ */
+export interface HonertiaAuthType {
+  auth?: unknown
+}
+
+// Helper types that extract the user-defined type or fallback to unknown
+type DatabaseType = HonertiaDatabaseType extends { db: infer T } ? T : unknown
+type AuthType = HonertiaAuthType extends { auth: infer T } ? T : unknown
+
+/**
  * Database Service - Generic database client
+ *
+ * By default typed as `unknown`. Use module augmentation on
+ * `HonertiaDatabaseType` to provide your database type.
  */
 export class DatabaseService extends Context.Tag('honertia/Database')<
   DatabaseService,
-  unknown
+  DatabaseType
 >() {}
 
 /**
  * Auth Service - Better-auth instance
+ *
+ * By default typed as `unknown`. Use module augmentation on
+ * `HonertiaAuthType` to provide your auth type.
  */
 export class AuthService extends Context.Tag('honertia/Auth')<
   AuthService,
-  unknown
+  AuthType
 >() {}
 
 /**
