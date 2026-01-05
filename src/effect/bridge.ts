@@ -4,7 +4,7 @@
  * Middleware that connects Hono's request handling to Effect's runtime.
  */
 
-import { Effect, Layer, ManagedRuntime, Context } from 'effect'
+import { Layer, ManagedRuntime } from 'effect'
 import type { Context as HonoContext, MiddlewareHandler, Env } from 'hono'
 import {
   DatabaseService,

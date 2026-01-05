@@ -13,7 +13,6 @@ import { Redirect } from './errors.js'
 import {
   DatabaseService,
   AuthService,
-  AuthUserService,
   HonertiaService,
   RequestService,
   ResponseFactoryService,

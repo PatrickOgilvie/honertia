@@ -4,7 +4,7 @@
  * Laravel-inspired Effect Schema helpers for common validation patterns.
  */
 
-import { Schema as S, ParseResult } from 'effect'
+import { Schema as S } from 'effect'
 
 // =============================================================================
 // String Types
