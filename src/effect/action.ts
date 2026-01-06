@@ -111,9 +111,9 @@ type SafeInput<A> = Validated<A> | Trusted<A>
 
 type SafeValues<V> =
   V extends Array<infer E>
-    ? Array<SafeInput<E>> | SafeInput<V>
+    ? Array<SafeInput<E>> | SafeInput<E> | SafeInput<V>
     : V extends ReadonlyArray<infer E>
-      ? ReadonlyArray<SafeInput<E>> | SafeInput<V>
+      ? ReadonlyArray<SafeInput<E>> | SafeInput<E> | SafeInput<V>
       : SafeInput<V>
 
 type SafeParam<P> =
