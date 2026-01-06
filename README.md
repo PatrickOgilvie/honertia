@@ -511,10 +511,11 @@ const input = yield* validateRequest(
   S.Struct({ name: requiredString, description: S.optional(S.String) }),
   { errorComponent: 'Projects/Create' }
 )
-// input is fully typed: { name: string, description?: string }
+// input is Validated<{ name: string, description?: string }>
 ```
 
 On validation failure, re-renders `errorComponent` with field-level errors.
+`validateRequest` returns a branded `Validated<T>` value that you can require for writes.
 
 #### `DatabaseService` - Database Access
 
@@ -552,7 +553,9 @@ import { Effect, Schema as S } from 'effect'
 import {
   action,
   authorize,
+  asTrusted,
   validateRequest,
+  dbMutation,
   DatabaseService,
   redirect,
   requiredString,
@@ -575,12 +578,12 @@ export const createProject = action(
 
     // 3. Database - perform the mutation
     const db = yield* DatabaseService
-    yield* Effect.tryPromise(() =>
-      db.insert(projects).values({
+    yield* dbMutation(db, async (db) => {
+      await db.insert(projects).values(asTrusted({
         ...input,
         userId: auth.user.id,
-      })
-    )
+      }))
+    })
 
     // 4. Response - redirect on success
     return yield* redirect('/projects')
@@ -656,22 +659,62 @@ export const searchProjects = action(
 
 ### Helper Utilities
 
+#### `dbMutation` - Safe Writes
+
+Use `dbMutation` for writes that require validated or trusted input:
+
+```typescript
+import { DatabaseService, dbMutation, validateRequest, asTrusted, authorize } from 'honertia/effect'
+
+const auth = yield* authorize()
+const input = yield* validateRequest(CreateProjectSchema)
+const values = asTrusted({ userId: auth.user.id, ...input })
+const db = yield* DatabaseService
+
+yield* dbMutation(db, async (db) => {
+  await db.insert(projects).values(values)
+})
+```
+
+Use `asTrusted` for server-derived values like audit logs or usage meters, or when combining validated input with server-only fields.
+`dbMutation` also wraps `execute`/`run` params to require validated or trusted inputs.
+
+Why this design: we intentionally use nominal brands that do not survive spreads or merges. That means any modified or combined object must be explicitly re-branded with `asTrusted`, which makes trust boundaries visible and prevents accidental writes of unvalidated data.
+
+```typescript
+const input = yield* validateRequest(CreateProjectSchema)
+
+// This fails typechecking because the brand is dropped by the merge
+const merged = { ...input, userId: auth.user.id }
+// await db.insert(projects).values(merged)
+
+// Explicitly re-brand after adding server data
+const values = asTrusted({ ...input, userId: auth.user.id })
+await db.insert(projects).values(values)
+```
+
+For multi-step writes, use `dbTransaction` so writes require validated or trusted input.
+
 #### `dbTransaction` - Database Transactions
 
 Run multiple database operations in a transaction with automatic rollback on failure. The database instance is passed explicitly to keep the dependency visible and consistent with other service patterns:
 
 ```typescript
-import { DatabaseService, dbTransaction } from 'honertia/effect'
+import { DatabaseService, dbTransaction, asTrusted } from 'honertia/effect'
 
 const db = yield* DatabaseService
+const user = asTrusted({ name: 'Alice', email: 'alice@example.com' })
+const balanceUpdate = asTrusted({ balance: 100 })
 
 yield* dbTransaction(db, async (tx) => {
-  await tx.insert(users).values({ name: 'Alice', email: 'alice@example.com' })
-  await tx.update(accounts).set({ balance: 100 }).where(eq(accounts.userId, id))
+  await tx.insert(users).values(user)
+  await tx.update(accounts).set(balanceUpdate).where(eq(accounts.userId, id))
   // If any operation fails, the entire transaction rolls back
   return { success: true }
 })
 ```
+
+`dbTransaction` wraps `insert`, `update`, and `execute`/`run` params; `delete` has no payload, so build its conditions from validated or trusted values.
 
 ## Core Concepts
 
@@ -684,7 +727,9 @@ import { Effect } from 'effect'
 import {
   action,
   authorize,
+  asTrusted,
   validateRequest,
+  dbMutation,
   DatabaseService,
   render,
   redirect,
@@ -716,12 +761,12 @@ export const createProject = action(
     })
     const db = yield* DatabaseService
 
-    yield* Effect.tryPromise(() =>
-      db.insert(schema.projects).values({
+    yield* dbMutation(db, async (db) => {
+      await db.insert(schema.projects).values(asTrusted({
         ...input,
         userId: auth.user.id,
-      })
-    )
+      }))
+    })
 
     return yield* redirect('/projects')
   })
@@ -892,7 +937,7 @@ export const createProject = Effect.gen(function* () {
     errorComponent: 'Projects/Create', // Re-render with errors on validation failure
   })
 
-  // input is fully typed: { name: string, description: string | null }
+  // input is Validated<{ name: string, description: string | null }>
   yield* insertProject(input)
 
   return yield* redirect('/projects')

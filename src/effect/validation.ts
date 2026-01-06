@@ -69,6 +69,38 @@ export function formatSchemaErrors(
 }
 
 /**
+ * Nominal brand marker for validated data.
+ * Private field prevents the brand from surviving object spreads.
+ */
+declare class ValidatedBrand {
+  private readonly __validatedBrand: void
+}
+
+export type Validated<A> = A & ValidatedBrand
+
+/**
+ * Mark data as validated (type-level only).
+ */
+export const asValidated = <A>(input: A): Validated<A> =>
+  input as Validated<A>
+
+/**
+ * Nominal brand marker for trusted (server-derived) data.
+ * Private field prevents the brand from surviving object spreads.
+ */
+declare class TrustedBrand {
+  private readonly __trustedBrand: void
+}
+
+export type Trusted<A> = A & TrustedBrand
+
+/**
+ * Mark data as trusted (type-level only).
+ */
+export const asTrusted = <A>(input: A): Trusted<A> =>
+  input as Trusted<A>
+
+/**
  * Options for validation functions.
  */
 export interface ValidateOptions {
@@ -111,14 +143,15 @@ export function validate<A, I>(
   schema: S.Schema<A, I>,
   data: unknown,
   options: ValidateOptions = {}
-): Effect.Effect<A, ValidationError, never> {
+): Effect.Effect<Validated<A>, ValidationError, never> {
   return S.decodeUnknown(schema)(data).pipe(
     Effect.mapError((error) =>
       new ValidationError({
         errors: formatSchemaErrors(error, options.messages, options.attributes),
         component: options.errorComponent,
       })
-    )
+    ),
+    Effect.map(asValidated)
   )
 }
 
@@ -129,7 +162,7 @@ export function validate<A, I>(
 export function validateRequest<A, I>(
   schema: S.Schema<A, I>,
   options: ValidateOptions = {}
-): Effect.Effect<A, ValidationError, RequestService> {
+): Effect.Effect<Validated<A>, ValidationError, RequestService> {
   return Effect.gen(function* () {
     const data = yield* getValidationData
     return yield* validate(schema, data, options)

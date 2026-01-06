@@ -40,6 +40,10 @@ export {
   formatSchemaErrors,
   validate,
   validateRequest,
+  asValidated,
+  asTrusted,
+  type Validated,
+  type Trusted,
 } from './validation.js'
 
 // Bridge
@@ -62,7 +66,9 @@ export {
 export {
   action,
   authorize,
+  dbMutation,
   dbTransaction,
+  type SafeTx,
 } from './action.js'
 
 // Response Helpers

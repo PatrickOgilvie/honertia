@@ -87,4 +87,8 @@ export {
   formatSchemaErrors,
   validate,
   validateRequest,
+  asValidated,
+  asTrusted,
+  type Validated,
+  type Trusted,
 } from './effect/validation.js'
