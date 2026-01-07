@@ -7,7 +7,7 @@
 
 import { Context, Data, Effect } from 'effect'
 import type { Table } from 'drizzle-orm'
-import type { HonertiaDatabaseType } from './services.js'
+import type { SchemaType } from './services.js'
 
 /**
  * Error thrown when a bound model is not found in the BoundModels context.
@@ -85,9 +85,9 @@ export class BoundModels extends Context.Tag('honertia/BoundModels')<
 export const bound = <K extends string>(
   key: K
 ): Effect.Effect<
-  K extends keyof HonertiaDatabaseType['schema']
-    ? HonertiaDatabaseType['schema'][K] extends Table
-      ? HonertiaDatabaseType['schema'][K]['$inferSelect']
+  K extends keyof SchemaType
+    ? SchemaType[K] extends Table
+      ? SchemaType[K]['$inferSelect']
       : unknown
     : unknown,
   BoundModelNotFound,

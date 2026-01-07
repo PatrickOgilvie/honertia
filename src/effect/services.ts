@@ -23,10 +23,14 @@ import { Context } from 'effect'
  *
  * Then use the `DatabaseService` tag to get your typed database.
  */
-export interface HonertiaDatabaseType {
-  type: unknown
-  schema: Record<string, unknown>
-}
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface HonertiaDatabaseType {}
+
+/** Extract database type from augmented interface, defaults to unknown */
+export type DatabaseType = HonertiaDatabaseType extends { type: infer T } ? T : unknown
+
+/** Extract schema type from augmented interface, defaults to Record<string, unknown> */
+export type SchemaType = HonertiaDatabaseType extends { schema: infer T } ? T : Record<string, unknown>
 
 /**
  * Augmentable interface for auth type.
@@ -41,9 +45,11 @@ export interface HonertiaDatabaseType {
  * }
  * ```
  */
-export interface HonertiaAuthType {
-  [key: string]: unknown
-}
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface HonertiaAuthType {}
+
+/** Extract auth type from augmented interface, defaults to unknown */
+export type AuthType = HonertiaAuthType extends { type: infer T } ? T : unknown
 
 /**
  * Database Service - Generic database client
@@ -51,8 +57,8 @@ export interface HonertiaAuthType {
 const DatabaseService_base: Context.TagClass<
   DatabaseService,
   'honertia/Database',
-  HonertiaDatabaseType['type']
-> = Context.Tag('honertia/Database')<DatabaseService, HonertiaDatabaseType['type']>()
+  DatabaseType
+> = Context.Tag('honertia/Database')<DatabaseService, DatabaseType>()
 
 export class DatabaseService extends DatabaseService_base {}
 
@@ -62,8 +68,8 @@ export class DatabaseService extends DatabaseService_base {}
 const AuthService_base: Context.TagClass<
   AuthService,
   'honertia/Auth',
-  HonertiaAuthType['type']
-> = Context.Tag('honertia/Auth')<AuthService, HonertiaAuthType['type']>()
+  AuthType
+> = Context.Tag('honertia/Auth')<AuthService, AuthType>()
 
 export class AuthService extends AuthService_base {}
 

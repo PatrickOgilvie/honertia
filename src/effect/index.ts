@@ -18,6 +18,9 @@ export {
   type ResponseFactory,
   type HonertiaDatabaseType,
   type HonertiaAuthType,
+  type DatabaseType,
+  type SchemaType,
+  type AuthType,
 } from './services.js'
 
 // Errors
