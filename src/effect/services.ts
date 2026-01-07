@@ -16,6 +16,7 @@ import { Context } from 'effect'
  * declare module 'honertia/effect' {
  *   interface HonertiaDatabaseType {
  *     type: Database // Your database type (Drizzle, Prisma, Kysely, etc.)
+ *     schema: typeof schema // Your Drizzle schema for route model binding
  *   }
  * }
  * ```
@@ -24,6 +25,7 @@ import { Context } from 'effect'
  */
 export interface HonertiaDatabaseType {
   [key: string]: unknown
+  schema?: Record<string, unknown>
 }
 
 /**

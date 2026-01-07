@@ -5,11 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.12] - 2026-01-07
 
 ### Added
 
-- Route helpers now accept a `params` schema to validate `/:id` values and automatically return 404s when the schema fails.
+- **Laravel-style route model binding**: Routes now support `{param}` syntax that automatically resolves database models
+  - `effectRoutes(app, { schema }).get('/projects/{project}', handler)` queries the `projects` table by `id`
+  - `{param:column}` syntax for binding by non-id columns: `/projects/{project:slug}`
+  - Nested routes auto-scope via Drizzle relations: `/users/{user}/posts/{post}` queries posts where `userId = user.id`
+  - `bound('project')` accessor to retrieve resolved models in handlers
+  - Zero overhead for routes without `{bindings}` syntax
+- Route helpers now accept a `params` schema to validate route parameters and automatically return 404s when the schema fails
+- `BoundModels` service and `bound()` helper exported from `honertia/effect`
+- `parseBindings()` and `toHonoPath()` utilities for custom route handling
+- `drizzle-orm` as optional peer dependency for route model binding
+- `schema` property on `HonertiaDatabaseType` for typed route model binding
+- Comprehensive test suite for route binding with 75+ test cases
 
 ## [0.1.11] - 2026-01-06
 

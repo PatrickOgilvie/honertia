@@ -48,6 +48,18 @@ export interface EffectBridgeConfig<E extends Env, CustomServices = never> {
    * Return a Layer that provides your custom services.
    */
   services?: (c: HonoContext<E>) => Layer.Layer<CustomServices, never, never>
+  /**
+   * Drizzle schema for route model binding.
+   * Required if using Laravel-style route model binding.
+   *
+   * @example
+   * ```typescript
+   * import * as schema from '~/db/schema'
+   *
+   * effectRoutes(app, { schema })
+   * ```
+   */
+  schema?: Record<string, unknown>
 }
 
 /**

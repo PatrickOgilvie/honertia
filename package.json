@@ -1,6 +1,6 @@
 {
   "name": "honertia",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "Inertia.js-style server-driven SPA adapter for Hono",
   "type": "module",
   "main": "./dist/index.js",
@@ -60,11 +60,21 @@
   },
   "peerDependencies": {
     "hono": ">=4.0.0",
-    "better-auth": ">=1.0.0"
+    "better-auth": ">=1.0.0",
+    "drizzle-orm": ">=0.30.0"
+  },
+  "peerDependenciesMeta": {
+    "better-auth": {
+      "optional": true
+    },
+    "drizzle-orm": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/bun": "^1.1.0",
     "better-auth": "^1.0.0",
+    "drizzle-orm": "^0.38.0",
     "hono": "^4.6.0",
     "typescript": "^5.3.0"
   }

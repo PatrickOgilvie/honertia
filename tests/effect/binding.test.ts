@@ -1,0 +1,676 @@
+/**
+ * Route Model Binding Tests
+ */
+
+import { describe, test, expect } from 'bun:test'
+import { Hono } from 'hono'
+import { Effect, Layer, Schema as S } from 'effect'
+import { effectRoutes } from '../../src/effect/routing.js'
+import { honertia } from '../../src/middleware.js'
+import { effectBridge } from '../../src/effect/bridge.js'
+import { uuid } from '../../src/effect/schema.js'
+import {
+  parseBindings,
+  toHonoPath,
+  pluralize,
+  bound,
+  BoundModels,
+  BoundModelNotFound,
+} from '../../src/effect/binding.js'
+
+describe('parseBindings', () => {
+  describe('basic Laravel-style bindings', () => {
+    test('parses single binding with default column', () => {
+      const bindings = parseBindings('/projects/{project}')
+      expect(bindings).toEqual([{ param: 'project', column: 'id' }])
+    })
+
+    test('parses single binding with custom column', () => {
+      const bindings = parseBindings('/projects/{project:slug}')
+      expect(bindings).toEqual([{ param: 'project', column: 'slug' }])
+    })
+
+    test('parses multiple bindings', () => {
+      const bindings = parseBindings('/users/{user}/posts/{post}')
+      expect(bindings).toEqual([
+        { param: 'user', column: 'id' },
+        { param: 'post', column: 'id' },
+      ])
+    })
+
+    test('parses mixed bindings with custom columns', () => {
+      const bindings = parseBindings('/users/{user:email}/posts/{post:slug}')
+      expect(bindings).toEqual([
+        { param: 'user', column: 'email' },
+        { param: 'post', column: 'slug' },
+      ])
+    })
+
+    test('handles complex nested paths', () => {
+      const bindings = parseBindings('/api/v1/users/{user}/posts/{post}/comments/{comment}')
+      expect(bindings).toEqual([
+        { param: 'user', column: 'id' },
+        { param: 'post', column: 'id' },
+        { param: 'comment', column: 'id' },
+      ])
+    })
+  })
+
+  describe('Hono-style routes (no Laravel bindings)', () => {
+    test('returns empty array for Hono :param style', () => {
+      expect(parseBindings('/users/:id')).toEqual([])
+    })
+
+    test('returns empty array for multiple Hono params', () => {
+      expect(parseBindings('/users/:userId/posts/:postId')).toEqual([])
+    })
+
+    test('returns empty array for static paths', () => {
+      expect(parseBindings('/users')).toEqual([])
+      expect(parseBindings('/api/v1/health')).toEqual([])
+      expect(parseBindings('/')).toEqual([])
+    })
+
+    test('returns empty array for wildcard routes', () => {
+      expect(parseBindings('/files/*')).toEqual([])
+      expect(parseBindings('/api/*')).toEqual([])
+    })
+
+    test('returns empty array for regex routes', () => {
+      expect(parseBindings('/users/:id{[0-9]+}')).toEqual([])
+    })
+  })
+
+  describe('mixed Hono and Laravel notation', () => {
+    test('only extracts Laravel bindings from mixed route', () => {
+      const bindings = parseBindings('/users/:userId/projects/{project}')
+      expect(bindings).toEqual([{ param: 'project', column: 'id' }])
+    })
+
+    test('extracts Laravel binding before Hono param', () => {
+      const bindings = parseBindings('/orgs/{org}/users/:userId')
+      expect(bindings).toEqual([{ param: 'org', column: 'id' }])
+    })
+
+    test('extracts multiple Laravel bindings ignoring Hono params', () => {
+      const bindings = parseBindings('/api/:version/users/{user}/posts/:postId/comments/{comment}')
+      expect(bindings).toEqual([
+        { param: 'user', column: 'id' },
+        { param: 'comment', column: 'id' },
+      ])
+    })
+
+    test('handles Laravel binding with custom column mixed with Hono', () => {
+      const bindings = parseBindings('/teams/:teamId/projects/{project:slug}/tasks/:taskId')
+      expect(bindings).toEqual([{ param: 'project', column: 'slug' }])
+    })
+  })
+
+  describe('edge cases', () => {
+    test('handles binding at root', () => {
+      const bindings = parseBindings('/{user}')
+      expect(bindings).toEqual([{ param: 'user', column: 'id' }])
+    })
+
+    test('handles binding with trailing slash', () => {
+      const bindings = parseBindings('/users/{user}/')
+      expect(bindings).toEqual([{ param: 'user', column: 'id' }])
+    })
+
+    test('handles consecutive bindings', () => {
+      const bindings = parseBindings('/{org}/{project}/{task}')
+      expect(bindings).toEqual([
+        { param: 'org', column: 'id' },
+        { param: 'project', column: 'id' },
+        { param: 'task', column: 'id' },
+      ])
+    })
+
+    test('handles single character param names', () => {
+      const bindings = parseBindings('/users/{u}/posts/{p}')
+      expect(bindings).toEqual([
+        { param: 'u', column: 'id' },
+        { param: 'p', column: 'id' },
+      ])
+    })
+
+    test('handles underscored param names', () => {
+      const bindings = parseBindings('/user_profiles/{user_profile}')
+      expect(bindings).toEqual([{ param: 'user_profile', column: 'id' }])
+    })
+
+    test('handles numeric-suffixed param names', () => {
+      const bindings = parseBindings('/items/{item1}/subitems/{item2}')
+      expect(bindings).toEqual([
+        { param: 'item1', column: 'id' },
+        { param: 'item2', column: 'id' },
+      ])
+    })
+
+    test('handles empty path', () => {
+      expect(parseBindings('')).toEqual([])
+    })
+
+    test('handles path with query string (should not affect parsing)', () => {
+      // Query strings shouldn't be in route definitions, but test anyway
+      const bindings = parseBindings('/users/{user}?include=posts')
+      expect(bindings).toEqual([{ param: 'user', column: 'id' }])
+    })
+
+    test('does not match incomplete braces', () => {
+      expect(parseBindings('/users/{user')).toEqual([])
+      expect(parseBindings('/users/user}')).toEqual([])
+      expect(parseBindings('/users/{{user}}')).toEqual([{ param: 'user', column: 'id' }])
+    })
+
+    test('handles various column name formats', () => {
+      expect(parseBindings('/users/{user:uuid}')).toEqual([{ param: 'user', column: 'uuid' }])
+      expect(parseBindings('/users/{user:user_id}')).toEqual([{ param: 'user', column: 'user_id' }])
+      expect(parseBindings('/users/{user:ID}')).toEqual([{ param: 'user', column: 'ID' }])
+    })
+  })
+})
+
+describe('toHonoPath', () => {
+  describe('basic Laravel to Hono conversion', () => {
+    test('converts single binding to Hono format', () => {
+      expect(toHonoPath('/projects/{project}')).toBe('/projects/:project')
+    })
+
+    test('converts binding with custom column to Hono format (strips column)', () => {
+      expect(toHonoPath('/projects/{project:slug}')).toBe('/projects/:project')
+    })
+
+    test('converts multiple bindings', () => {
+      expect(toHonoPath('/users/{user}/posts/{post}')).toBe('/users/:user/posts/:post')
+    })
+
+    test('converts deeply nested bindings', () => {
+      expect(toHonoPath('/orgs/{org}/teams/{team}/projects/{project}/tasks/{task}')).toBe(
+        '/orgs/:org/teams/:team/projects/:project/tasks/:task'
+      )
+    })
+
+    test('converts all custom columns', () => {
+      expect(toHonoPath('/users/{user:email}/posts/{post:slug}')).toBe('/users/:user/posts/:post')
+    })
+  })
+
+  describe('Hono-style routes (passthrough)', () => {
+    test('preserves Hono :param style unchanged', () => {
+      expect(toHonoPath('/users/:id')).toBe('/users/:id')
+    })
+
+    test('preserves multiple Hono params', () => {
+      expect(toHonoPath('/users/:userId/posts/:postId')).toBe('/users/:userId/posts/:postId')
+    })
+
+    test('preserves static paths', () => {
+      expect(toHonoPath('/users')).toBe('/users')
+      expect(toHonoPath('/api/v1/health')).toBe('/api/v1/health')
+      expect(toHonoPath('/')).toBe('/')
+    })
+
+    test('preserves wildcard routes', () => {
+      expect(toHonoPath('/files/*')).toBe('/files/*')
+      expect(toHonoPath('/api/*')).toBe('/api/*')
+    })
+
+    test('preserves regex routes', () => {
+      expect(toHonoPath('/users/:id{[0-9]+}')).toBe('/users/:id{[0-9]+}')
+    })
+  })
+
+  describe('mixed Hono and Laravel notation', () => {
+    test('converts Laravel bindings while preserving Hono params', () => {
+      expect(toHonoPath('/users/:userId/projects/{project}')).toBe('/users/:userId/projects/:project')
+    })
+
+    test('handles Laravel before Hono', () => {
+      expect(toHonoPath('/orgs/{org}/users/:userId')).toBe('/orgs/:org/users/:userId')
+    })
+
+    test('handles complex mixed routes', () => {
+      expect(toHonoPath('/api/:version/users/{user}/posts/:postId/comments/{comment}')).toBe(
+        '/api/:version/users/:user/posts/:postId/comments/:comment'
+      )
+    })
+
+    test('handles Laravel with custom column mixed with Hono', () => {
+      expect(toHonoPath('/teams/:teamId/projects/{project:slug}/tasks/:taskId')).toBe(
+        '/teams/:teamId/projects/:project/tasks/:taskId'
+      )
+    })
+
+    test('handles alternating styles', () => {
+      expect(toHonoPath('/{a}/:b/{c}/:d/{e}')).toBe('/:a/:b/:c/:d/:e')
+    })
+  })
+
+  describe('edge cases', () => {
+    test('handles binding at root', () => {
+      expect(toHonoPath('/{user}')).toBe('/:user')
+    })
+
+    test('handles binding with trailing slash', () => {
+      expect(toHonoPath('/users/{user}/')).toBe('/users/:user/')
+    })
+
+    test('handles consecutive bindings without separators', () => {
+      expect(toHonoPath('/{org}/{project}/{task}')).toBe('/:org/:project/:task')
+    })
+
+    test('handles single character param names', () => {
+      expect(toHonoPath('/users/{u}/posts/{p}')).toBe('/users/:u/posts/:p')
+    })
+
+    test('handles underscored param names', () => {
+      expect(toHonoPath('/user_profiles/{user_profile}')).toBe('/user_profiles/:user_profile')
+    })
+
+    test('handles numeric-suffixed param names', () => {
+      expect(toHonoPath('/items/{item1}/subitems/{item2}')).toBe('/items/:item1/subitems/:item2')
+    })
+
+    test('handles empty path', () => {
+      expect(toHonoPath('')).toBe('')
+    })
+
+    test('handles incomplete braces (no conversion)', () => {
+      expect(toHonoPath('/users/{user')).toBe('/users/{user')
+      expect(toHonoPath('/users/user}')).toBe('/users/user}')
+    })
+
+    test('handles double braces', () => {
+      expect(toHonoPath('/users/{{user}}')).toBe('/users/{:user}')
+    })
+
+    test('preserves query string portion', () => {
+      expect(toHonoPath('/users/{user}?include=posts')).toBe('/users/:user?include=posts')
+    })
+  })
+})
+
+describe('pluralize', () => {
+  test('adds s to regular words', () => {
+    expect(pluralize('user')).toBe('users')
+    expect(pluralize('project')).toBe('projects')
+    expect(pluralize('post')).toBe('posts')
+  })
+
+  test('handles words ending in consonant + y', () => {
+    expect(pluralize('category')).toBe('categories')
+    expect(pluralize('company')).toBe('companies')
+    expect(pluralize('city')).toBe('cities')
+  })
+
+  test('handles words ending in vowel + y', () => {
+    expect(pluralize('day')).toBe('days')
+    expect(pluralize('key')).toBe('keys')
+    expect(pluralize('toy')).toBe('toys')
+  })
+
+  test('handles words ending in s, x, z, ch, sh', () => {
+    expect(pluralize('class')).toBe('classes')
+    expect(pluralize('box')).toBe('boxes')
+    expect(pluralize('buzz')).toBe('buzzes')
+    expect(pluralize('match')).toBe('matches')
+    expect(pluralize('wish')).toBe('wishes')
+    expect(pluralize('bus')).toBe('buses')
+  })
+})
+
+describe('bound() accessor', () => {
+  test('retrieves bound model from context', async () => {
+    const models = new Map<string, unknown>()
+    models.set('project', { id: '123', name: 'Test Project' })
+
+    const effect = Effect.gen(function* () {
+      const project = yield* bound('project')
+      return project
+    })
+
+    const result = await Effect.runPromise(
+      effect.pipe(Effect.provide(Layer.succeed(BoundModels, models)))
+    )
+
+    expect(result).toEqual({ id: '123', name: 'Test Project' })
+  })
+
+  test('fails with BoundModelNotFound for missing binding', async () => {
+    const models = new Map<string, unknown>()
+
+    const effect = Effect.gen(function* () {
+      const project = yield* bound('project')
+      return project
+    })
+
+    const result = await Effect.runPromiseExit(
+      effect.pipe(Effect.provide(Layer.succeed(BoundModels, models)))
+    )
+
+    expect(result._tag).toBe('Failure')
+    if (result._tag === 'Failure') {
+      const error = result.cause
+      // The error should be a BoundModelNotFound
+      expect(String(error)).toContain('BoundModelNotFound')
+      expect(String(error)).toContain('project')
+    }
+  })
+})
+
+describe('parseBindings and toHonoPath consistency', () => {
+  const testCases = [
+    // [input, expectedHonoPath, expectedBindings]
+    ['/projects/{project}', '/projects/:project', [{ param: 'project', column: 'id' }]],
+    ['/projects/{project:slug}', '/projects/:project', [{ param: 'project', column: 'slug' }]],
+    ['/users/{user}/posts/{post}', '/users/:user/posts/:post', [
+      { param: 'user', column: 'id' },
+      { param: 'post', column: 'id' },
+    ]],
+    ['/api/:version/users/{user}', '/api/:version/users/:user', [{ param: 'user', column: 'id' }]],
+    ['/users/:id', '/users/:id', []],
+    ['/static/path', '/static/path', []],
+    ['/', '/', []],
+  ] as const
+
+  test.each(testCases)(
+    'route "%s" converts to "%s" with correct bindings',
+    (input, expectedPath, expectedBindings) => {
+      expect(toHonoPath(input)).toBe(expectedPath)
+      expect(parseBindings(input)).toEqual(expectedBindings)
+    }
+  )
+
+  test('binding param names match Hono param names after conversion', () => {
+    const routes = [
+      '/users/{user}',
+      '/users/{user}/posts/{post}',
+      '/orgs/{org:slug}/teams/{team}/projects/{project:uuid}',
+    ]
+
+    for (const route of routes) {
+      const bindings = parseBindings(route)
+      const honoPath = toHonoPath(route)
+
+      // Each binding param should appear as :param in the Hono path
+      for (const binding of bindings) {
+        expect(honoPath).toContain(`:${binding.param}`)
+      }
+    }
+  })
+})
+
+describe('Route Model Binding Integration', () => {
+  describe('route registration with different path styles', () => {
+    test('Laravel-style routes work without schema (no binding resolution)', async () => {
+      const app = new Hono()
+
+      app.use(
+        '*',
+        honertia({
+          version: '1.0.0',
+          render: (page) => JSON.stringify(page),
+        })
+      )
+
+      app.use('*', effectBridge())
+
+      effectRoutes(app).get(
+        '/projects/{project}',
+        Effect.succeed(new Response('Project page'))
+      )
+
+      const res = await app.request('/projects/123')
+      expect(res.status).toBe(200)
+      expect(await res.text()).toBe('Project page')
+    })
+
+    test('Laravel-style routes with custom column work', async () => {
+      const app = new Hono()
+      app.use('*', honertia({ version: '1.0.0', render: (page) => JSON.stringify(page) }))
+      app.use('*', effectBridge())
+
+      effectRoutes(app).get(
+        '/projects/{project:slug}',
+        Effect.succeed(new Response('Project by slug'))
+      )
+
+      const res = await app.request('/projects/my-awesome-project')
+      expect(res.status).toBe(200)
+      expect(await res.text()).toBe('Project by slug')
+    })
+
+    test('Hono-style routes still work (backward compatibility)', async () => {
+      const app = new Hono()
+      app.use('*', honertia({ version: '1.0.0', render: (page) => JSON.stringify(page) }))
+      app.use('*', effectBridge())
+
+      effectRoutes(app).get(
+        '/projects/:id',
+        Effect.succeed(new Response('Project by ID'))
+      )
+
+      const res = await app.request('/projects/456')
+      expect(res.status).toBe(200)
+      expect(await res.text()).toBe('Project by ID')
+    })
+
+    test('mixed Hono and Laravel styles work together', async () => {
+      const app = new Hono()
+      app.use('*', honertia({ version: '1.0.0', render: (page) => JSON.stringify(page) }))
+      app.use('*', effectBridge())
+
+      effectRoutes(app).get(
+        '/api/:version/projects/{project}',
+        Effect.succeed(new Response('Mixed styles'))
+      )
+
+      const res = await app.request('/api/v1/projects/123')
+      expect(res.status).toBe(200)
+      expect(await res.text()).toBe('Mixed styles')
+    })
+
+    test('nested Laravel-style routes work', async () => {
+      const app = new Hono()
+      app.use('*', honertia({ version: '1.0.0', render: (page) => JSON.stringify(page) }))
+      app.use('*', effectBridge())
+
+      effectRoutes(app).get(
+        '/users/{user}/posts/{post}/comments/{comment}',
+        Effect.succeed(new Response('Deeply nested'))
+      )
+
+      const res = await app.request('/users/1/posts/2/comments/3')
+      expect(res.status).toBe(200)
+      expect(await res.text()).toBe('Deeply nested')
+    })
+
+    test('all HTTP methods support Laravel-style binding', async () => {
+      const app = new Hono()
+      app.use('*', honertia({ version: '1.0.0', render: (page) => JSON.stringify(page) }))
+      app.use('*', effectBridge())
+
+      const routes = effectRoutes(app)
+
+      routes.get('/items/{item}', Effect.succeed(new Response('GET')))
+      routes.post('/items/{item}', Effect.succeed(new Response('POST')))
+      routes.put('/items/{item}', Effect.succeed(new Response('PUT')))
+      routes.patch('/items/{item}', Effect.succeed(new Response('PATCH')))
+      routes.delete('/items/{item}', Effect.succeed(new Response('DELETE')))
+
+      expect((await app.request('/items/1', { method: 'GET' })).status).toBe(200)
+      expect(await (await app.request('/items/1', { method: 'GET' })).text()).toBe('GET')
+
+      expect((await app.request('/items/1', { method: 'POST' })).status).toBe(200)
+      expect(await (await app.request('/items/1', { method: 'POST' })).text()).toBe('POST')
+
+      expect((await app.request('/items/1', { method: 'PUT' })).status).toBe(200)
+      expect(await (await app.request('/items/1', { method: 'PUT' })).text()).toBe('PUT')
+
+      expect((await app.request('/items/1', { method: 'PATCH' })).status).toBe(200)
+      expect(await (await app.request('/items/1', { method: 'PATCH' })).text()).toBe('PATCH')
+
+      expect((await app.request('/items/1', { method: 'DELETE' })).status).toBe(200)
+      expect(await (await app.request('/items/1', { method: 'DELETE' })).text()).toBe('DELETE')
+    })
+
+    test('prefix() works with Laravel-style routes', async () => {
+      const app = new Hono()
+      app.use('*', honertia({ version: '1.0.0', render: (page) => JSON.stringify(page) }))
+      app.use('*', effectBridge())
+
+      effectRoutes(app)
+        .prefix('/api/v1')
+        .get('/projects/{project}', Effect.succeed(new Response('Prefixed')))
+
+      const res = await app.request('/api/v1/projects/123')
+      expect(res.status).toBe(200)
+      expect(await res.text()).toBe('Prefixed')
+    })
+
+    test('group() works with Laravel-style routes', async () => {
+      const app = new Hono()
+      app.use('*', honertia({ version: '1.0.0', render: (page) => JSON.stringify(page) }))
+      app.use('*', effectBridge())
+
+      effectRoutes(app)
+        .prefix('/admin')
+        .group((route) => {
+          route.get('/users/{user}', Effect.succeed(new Response('Admin user')))
+          route.get('/projects/{project:slug}', Effect.succeed(new Response('Admin project')))
+        })
+
+      expect((await app.request('/admin/users/1')).status).toBe(200)
+      expect(await (await app.request('/admin/users/1')).text()).toBe('Admin user')
+
+      expect((await app.request('/admin/projects/my-project')).status).toBe(200)
+      expect(await (await app.request('/admin/projects/my-project')).text()).toBe('Admin project')
+    })
+  })
+
+  describe('params schema validation with Laravel-style routes', () => {
+    test('validates params schema and 404s invalid values with Laravel syntax', async () => {
+      const app = new Hono()
+      app.use('*', honertia({ version: '1.0.0', render: (page) => JSON.stringify(page) }))
+      app.use('*', effectBridge())
+
+      effectRoutes(app).get(
+        '/projects/{project}',
+        Effect.succeed(new Response('Validated')),
+        { params: S.Struct({ project: uuid }) }
+      )
+
+      const invalid = await app.request('/projects/not-a-uuid')
+      expect(invalid.status).toBe(404)
+
+      const valid = await app.request('/projects/123e4567-e89b-12d3-a456-426614174000')
+      expect(valid.status).toBe(200)
+      expect(await valid.text()).toBe('Validated')
+    })
+
+    test('validates multiple params with Laravel syntax', async () => {
+      const app = new Hono()
+      app.use('*', honertia({ version: '1.0.0', render: (page) => JSON.stringify(page) }))
+      app.use('*', effectBridge())
+
+      effectRoutes(app).get(
+        '/users/{user}/posts/{post}',
+        Effect.succeed(new Response('Both valid')),
+        {
+          params: S.Struct({
+            user: uuid,
+            post: uuid,
+          }),
+        }
+      )
+
+      // Both invalid
+      const bothInvalid = await app.request('/users/bad/posts/also-bad')
+      expect(bothInvalid.status).toBe(404)
+
+      // First valid, second invalid
+      const secondInvalid = await app.request(
+        '/users/123e4567-e89b-12d3-a456-426614174000/posts/not-uuid'
+      )
+      expect(secondInvalid.status).toBe(404)
+
+      // Both valid
+      const bothValid = await app.request(
+        '/users/123e4567-e89b-12d3-a456-426614174000/posts/987fcdeb-51a2-3bc4-d567-890123456789'
+      )
+      expect(bothValid.status).toBe(200)
+      expect(await bothValid.text()).toBe('Both valid')
+    })
+
+    test('validates params with custom column syntax', async () => {
+      const app = new Hono()
+      app.use('*', honertia({ version: '1.0.0', render: (page) => JSON.stringify(page) }))
+      app.use('*', effectBridge())
+
+      // Even with :slug column, the param name is still 'project'
+      effectRoutes(app).get(
+        '/projects/{project:slug}',
+        Effect.succeed(new Response('Slug validated')),
+        {
+          params: S.Struct({
+            project: S.String.pipe(S.minLength(3), S.maxLength(50)),
+          }),
+        }
+      )
+
+      const tooShort = await app.request('/projects/ab')
+      expect(tooShort.status).toBe(404)
+
+      const valid = await app.request('/projects/my-awesome-project')
+      expect(valid.status).toBe(200)
+    })
+
+    test('validates mixed Hono and Laravel params', async () => {
+      const app = new Hono()
+      app.use('*', honertia({ version: '1.0.0', render: (page) => JSON.stringify(page) }))
+      app.use('*', effectBridge())
+
+      effectRoutes(app).get(
+        '/api/:version/projects/{project}',
+        Effect.succeed(new Response('Mixed validated')),
+        {
+          params: S.Struct({
+            version: S.Literal('v1', 'v2'),
+            project: uuid,
+          }),
+        }
+      )
+
+      // Invalid version
+      const badVersion = await app.request('/api/v3/projects/123e4567-e89b-12d3-a456-426614174000')
+      expect(badVersion.status).toBe(404)
+
+      // Invalid project
+      const badProject = await app.request('/api/v1/projects/not-uuid')
+      expect(badProject.status).toBe(404)
+
+      // Both valid
+      const valid = await app.request('/api/v1/projects/123e4567-e89b-12d3-a456-426614174000')
+      expect(valid.status).toBe(200)
+      expect(await valid.text()).toBe('Mixed validated')
+    })
+
+    test('params validation runs before model binding', async () => {
+      const app = new Hono()
+      app.use('*', honertia({ version: '1.0.0', render: (page) => JSON.stringify(page) }))
+      app.use('*', effectBridge())
+
+      // Even without schema configured, params validation should work
+      effectRoutes(app).get(
+        '/projects/{project}',
+        Effect.succeed(new Response('Validated first')),
+        { params: S.Struct({ project: uuid }) }
+      )
+
+      // This should 404 from params validation, not from model binding
+      const invalid = await app.request('/projects/invalid-uuid')
+      expect(invalid.status).toBe(404)
+    })
+  })
+})

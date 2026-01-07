@@ -95,6 +95,16 @@ export {
   type EffectRouteOptions,
 } from './routing.js'
 
+// Route Model Binding
+export {
+  BoundModels,
+  BoundModelNotFound,
+  bound,
+  parseBindings,
+  toHonoPath,
+  type ParsedBinding,
+} from './binding.js'
+
 // Auth
 export {
   RequireAuthLayer,

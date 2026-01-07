@@ -907,12 +907,13 @@ effectRoutes(app).group((route) => {
 })
 ```
 
-You can also pass per-route `params` schemas to automatically reject invalid `:id`
-values with a 404 before your handler runs:
+#### Route Parameter Validation
+
+You can pass a `params` schema to validate route parameters before your handler runs. Invalid values automatically return a 404:
 
 ```typescript
 import { Schema as S } from 'effect'
-import { uuid } from 'honertia'
+import { uuid } from 'honertia/effect'
 
 effectRoutes(app).get(
   '/projects/:id',
@@ -920,6 +921,159 @@ effectRoutes(app).get(
   { params: S.Struct({ id: uuid }) }
 )
 ```
+
+This runs validation *before* the handler executes, so invalid UUIDs never hit your database. You can validate multiple params and use any Effect Schema:
+
+```typescript
+effectRoutes(app).get(
+  '/api/:version/projects/:id',
+  showProject,
+  {
+    params: S.Struct({
+      version: S.Literal('v1', 'v2'),
+      id: uuid,
+    }),
+  }
+)
+```
+
+#### Laravel-Style Route Model Binding
+
+Honertia supports Laravel-style route model binding with the `{param}` syntax. This automatically resolves route parameters to database models, returning 404 if the model isn't found.
+
+**Setup:**
+
+1. Add your Drizzle schema to the module augmentation:
+
+```typescript
+// src/types.d.ts
+import type { Database } from '~/db/db'
+import type { auth } from '~/lib/auth'
+import * as schema from '~/db/schema'
+
+declare module 'honertia/effect' {
+  interface HonertiaDatabaseType {
+    type: Database
+    schema: typeof schema  // Add this for route model binding
+  }
+
+  interface HonertiaAuthType {
+    type: typeof auth
+  }
+}
+```
+
+2. Pass your schema to `effectRoutes`:
+
+```typescript
+import * as schema from '~/db/schema'
+
+effectRoutes(app, { schema })
+  .get('/projects/{project}', showProject)
+```
+
+**Basic Usage:**
+
+```typescript
+import { bound } from 'honertia/effect'
+
+// Route: /projects/{project}
+// Automatically queries: SELECT * FROM projects WHERE id = :project
+
+effectRoutes(app, { schema }).get('/projects/{project}', showProject)
+
+const showProject = Effect.gen(function* () {
+  const project = yield* bound('project')  // Already fetched, guaranteed to exist
+  return yield* render('Projects/Show', { project })
+})
+```
+
+**Custom Column Binding:**
+
+By default, bindings query the `id` column. Use `{param:column}` syntax to bind by a different column:
+
+```typescript
+// Bind by slug instead of id
+effectRoutes(app, { schema }).get('/projects/{project:slug}', showProject)
+// Queries: SELECT * FROM projects WHERE slug = :project
+```
+
+**Nested Route Scoping:**
+
+For nested routes, Honertia automatically scopes child models to their parents using Drizzle relations:
+
+```typescript
+// Route: /users/{user}/posts/{post}
+effectRoutes(app, { schema }).get('/users/{user}/posts/{post}', showUserPost)
+
+// Queries:
+// 1. SELECT * FROM users WHERE id = :user
+// 2. SELECT * FROM posts WHERE id = :post AND userId = :user.id
+```
+
+This uses your Drizzle relations to discover the foreign key:
+
+```typescript
+// db/schema.ts
+export const postsRelations = relations(posts, ({ one }) => ({
+  user: one(users, {
+    fields: [posts.userId],
+    references: [users.id],
+  }),
+}))
+```
+
+If no relation is found, the child is resolved without scoping (useful for unrelated resources in the same route).
+
+**How Binding Works:**
+
+1. `{project}` is converted to `:project` for Hono's router
+2. At request time, the param value is extracted
+3. The table name is derived by pluralizing the param (`project` → `projects`)
+4. A database query is executed against that table
+5. If not found, a 404 is returned before your handler runs
+6. If found, the model is available via `bound('project')`
+
+**Combining with Param Validation:**
+
+Route model binding and param validation work together. Validation runs first:
+
+```typescript
+effectRoutes(app, { schema }).get(
+  '/projects/{project}',
+  showProject,
+  { params: S.Struct({ project: uuid }) }  // Validates UUID format first
+)
+```
+
+Order of execution:
+1. Param validation (returns 404 if schema fails)
+2. Model binding (returns 404 if not found in database)
+3. Your handler (model guaranteed to exist)
+
+**Mixed Notation:**
+
+You can mix Laravel-style `{binding}` with Hono-style `:param` in the same route. Only `{binding}` params are resolved from the database:
+
+```typescript
+// :version is a regular Hono param (not bound)
+// {project} is resolved from the database
+effectRoutes(app, { schema }).get(
+  '/api/:version/projects/{project}',
+  showProject
+)
+
+const showProject = Effect.gen(function* () {
+  const request = yield* RequestService
+  const version = request.param('version')  // 'v1', 'v2', etc.
+  const project = yield* bound('project')   // Database model
+  // ...
+})
+```
+
+**Performance:**
+
+Routes without `{bindings}` have zero overhead—binding resolution only runs when Laravel-style params are detected. The binding check is a simple regex test at route registration time.
 
 ## Validation
 
@@ -1368,10 +1522,12 @@ By default, `DatabaseService` and `AuthService` are typed as `unknown` since Hon
 // src/types.d.ts (or any .d.ts file in your project)
 import type { Database } from '~/db/db'
 import type { auth } from '~/lib/auth'
+import * as schema from '~/db/schema'
 
 declare module 'honertia/effect' {
   interface HonertiaDatabaseType {
-    type: Database // Your Drizzle/Prisma/Kysely type
+    type: Database        // Your Drizzle/Prisma/Kysely type
+    schema: typeof schema // Your Drizzle schema (for route model binding)
   }
 
   interface HonertiaAuthType {
