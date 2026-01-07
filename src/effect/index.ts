@@ -92,6 +92,7 @@ export {
   effectRoutes,
   type EffectHandler,
   type BaseServices,
+  type EffectRouteOptions,
 } from './routing.js'
 
 // Auth

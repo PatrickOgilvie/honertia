@@ -907,6 +907,20 @@ effectRoutes(app).group((route) => {
 })
 ```
 
+You can also pass per-route `params` schemas to automatically reject invalid `:id`
+values with a 404 before your handler runs:
+
+```typescript
+import { Schema as S } from 'effect'
+import { uuid } from 'honertia'
+
+effectRoutes(app).get(
+  '/projects/:id',
+  showProject,
+  { params: S.Struct({ id: uuid }) }
+)
+```
+
 ## Validation
 
 Honertia uses Effect Schema with Laravel-inspired validators:

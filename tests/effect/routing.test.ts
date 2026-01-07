@@ -4,7 +4,7 @@
 
 import { describe, test, expect } from 'bun:test'
 import { Hono } from 'hono'
-import { Effect, Layer, Context } from 'effect'
+import { Effect, Layer, Context, Schema as S } from 'effect'
 import { effectRoutes, EffectRouteBuilder } from '../../src/effect/routing.js'
 import { honertia } from '../../src/middleware.js'
 import { effectBridge } from '../../src/effect/bridge.js'
@@ -15,6 +15,7 @@ import {
   type AuthUser,
 } from '../../src/effect/services.js'
 import { Redirect, UnauthorizedError } from '../../src/effect/errors.js'
+import { uuid } from '../../src/effect/schema.js'
 
 // Helper to create test app
 const createApp = () => {
@@ -172,6 +173,25 @@ describe('EffectRouteBuilder', () => {
 
       const res = await app.request('/projects/1/tasks/2')
       expect(res.status).toBe(200)
+    })
+
+    test('validates params schema and 404s invalid values', async () => {
+      const app = createApp()
+
+      effectRoutes(app).get(
+        '/users/:id',
+        Effect.succeed(new Response('Validated')),
+        { params: S.Struct({ id: uuid }) }
+      )
+
+      const invalid = await app.request('/users/not-a-uuid')
+      expect(invalid.status).toBe(404)
+
+      const valid = await app.request(
+        '/users/123e4567-e89b-12d3-a456-426614174000'
+      )
+      expect(valid.status).toBe(200)
+      expect(await valid.text()).toBe('Validated')
     })
   })
 

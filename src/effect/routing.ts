@@ -4,12 +4,14 @@
  * Laravel-style routing with Effect handlers.
  */
 
-import { Effect, Layer } from 'effect'
-import type { Hono, MiddlewareHandler, Env } from 'hono'
+import { Effect, Exit, Layer, Schema as S } from 'effect'
+import type { Context as HonoContext, Hono, MiddlewareHandler, Env } from 'hono'
 import { effectHandler } from './handler.js'
 import { buildContextLayer, type EffectBridgeConfig } from './bridge.js'
-import type { AppError } from './errors.js'
-import { Redirect } from './errors.js'
+import {
+  type AppError,
+  Redirect,
+} from './errors.js'
 import {
   DatabaseService,
   AuthService,
@@ -37,6 +39,17 @@ export type BaseServices =
   | HonertiaService
   | DatabaseService
   | AuthService
+
+/**
+ * Route-level configuration options.
+ */
+export interface EffectRouteOptions {
+  /**
+   * Validate route params with the provided schema.
+   * Invalid values will return a 404 before the handler runs.
+   */
+  params?: S.Schema<Record<string, string>, Record<string, string>>
+}
 
 /**
  * Effect Route Builder with layer composition.
@@ -101,13 +114,36 @@ export class EffectRouteBuilder<
   /**
    * Create a Hono handler from an Effect.
    */
+  private async ensureParams(
+    c: HonoContext<E>,
+    schema?: S.Schema<Record<string, string>, Record<string, string>>
+  ): Promise<Response | null> {
+    if (!schema) return null
+
+    const rawParams = c.req.param()
+    const params: Record<string, string> =
+      typeof rawParams === 'string' ? {} : rawParams
+
+    const exit = await Effect.runPromiseExit(S.decodeUnknown(schema)(params))
+
+    if (Exit.isFailure(exit)) {
+      return c.notFound() as Response
+    }
+
+    return null
+  }
+
   private createHandler<R extends BaseServices | ProvidedServices | CustomServices>(
-    effect: EffectHandler<R, AppError | Error>
+    effect: EffectHandler<R, AppError | Error>,
+    options?: EffectRouteOptions
   ): MiddlewareHandler<E> {
     const layers = this.layers
     const bridgeConfig = this.bridgeConfig
 
     return async (c) => {
+      const validation = await this.ensureParams(c, options?.params)
+      if (validation) return validation
+
       // Build context layer from Hono context
       const contextLayer = buildContextLayer(c, bridgeConfig)
 
@@ -128,10 +164,15 @@ export class EffectRouteBuilder<
   /**
    * Register a GET route.
    */
-  get<R extends BaseServices | ProvidedServices | CustomServices>(    path: string,
-    effect: EffectHandler<R, AppError | Error>
+  get<R extends BaseServices | ProvidedServices | CustomServices>(
+    path: string,
+    effect: EffectHandler<R, AppError | Error>,
+    options?: EffectRouteOptions
   ): void {
-    this.app.get(this.resolvePath(path), this.createHandler(effect))
+    this.app.get(
+      this.resolvePath(path),
+      this.createHandler(effect, options)
+    )
   }
 
   /**
@@ -139,9 +180,13 @@ export class EffectRouteBuilder<
    */
   post<R extends BaseServices | ProvidedServices | CustomServices>(
     path: string,
-    effect: EffectHandler<R, AppError | Error>
+    effect: EffectHandler<R, AppError | Error>,
+    options?: EffectRouteOptions
   ): void {
-    this.app.post(this.resolvePath(path), this.createHandler(effect))
+    this.app.post(
+      this.resolvePath(path),
+      this.createHandler(effect, options)
+    )
   }
 
   /**
@@ -149,9 +194,13 @@ export class EffectRouteBuilder<
    */
   put<R extends BaseServices | ProvidedServices | CustomServices>(
     path: string,
-    effect: EffectHandler<R, AppError | Error>
+    effect: EffectHandler<R, AppError | Error>,
+    options?: EffectRouteOptions
   ): void {
-    this.app.put(this.resolvePath(path), this.createHandler(effect))
+    this.app.put(
+      this.resolvePath(path),
+      this.createHandler(effect, options)
+    )
   }
 
   /**
@@ -159,9 +208,13 @@ export class EffectRouteBuilder<
    */
   patch<R extends BaseServices | ProvidedServices | CustomServices>(
     path: string,
-    effect: EffectHandler<R, AppError | Error>
+    effect: EffectHandler<R, AppError | Error>,
+    options?: EffectRouteOptions
   ): void {
-    this.app.patch(this.resolvePath(path), this.createHandler(effect))
+    this.app.patch(
+      this.resolvePath(path),
+      this.createHandler(effect, options)
+    )
   }
 
   /**
@@ -169,9 +222,13 @@ export class EffectRouteBuilder<
    */
   delete<R extends BaseServices | ProvidedServices | CustomServices>(
     path: string,
-    effect: EffectHandler<R, AppError | Error>
+    effect: EffectHandler<R, AppError | Error>,
+    options?: EffectRouteOptions
   ): void {
-    this.app.delete(this.resolvePath(path), this.createHandler(effect))
+    this.app.delete(
+      this.resolvePath(path),
+      this.createHandler(effect, options)
+    )
   }
 
   /**
@@ -179,9 +236,13 @@ export class EffectRouteBuilder<
    */
   all<R extends BaseServices | ProvidedServices | CustomServices>(
     path: string,
-    effect: EffectHandler<R, AppError | Error>
+    effect: EffectHandler<R, AppError | Error>,
+    options?: EffectRouteOptions
   ): void {
-    this.app.all(this.resolvePath(path), this.createHandler(effect))
+    this.app.all(
+      this.resolvePath(path),
+      this.createHandler(effect, options)
+    )
   }
 }
 
