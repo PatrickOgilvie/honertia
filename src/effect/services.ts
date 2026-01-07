@@ -24,8 +24,8 @@ import { Context } from 'effect'
  * Then use the `DatabaseService` tag to get your typed database.
  */
 export interface HonertiaDatabaseType {
-  [key: string]: unknown
-  schema?: Record<string, unknown>
+  type: unknown
+  schema: Record<string, unknown>
 }
 
 /**

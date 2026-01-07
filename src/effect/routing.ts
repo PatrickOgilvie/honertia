@@ -47,6 +47,7 @@ export type BaseServices =
   | HonertiaService
   | DatabaseService
   | AuthService
+  | BoundModels
 
 /**
  * Route-level configuration options.
