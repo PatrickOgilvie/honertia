@@ -5,6 +5,7 @@
  */
 
 import { Layer, ManagedRuntime } from 'effect'
+import { HonertiaConfigurationError } from './errors.js'
 import type { Context as HonoContext, MiddlewareHandler, Env } from 'hono'
 import {
   DatabaseService,
@@ -85,9 +86,10 @@ function createUnconfiguredServiceProxy(
         if (prop === 'then' || prop === Symbol.toStringTag || prop === Symbol.iterator) {
           return undefined
         }
-        const error = new Error(message)
-        ;(error as any).hint = `Example: ${example}`
-        throw error
+        throw new HonertiaConfigurationError({
+          message,
+          hint: `Example: ${example}`,
+        })
       },
     }
   )

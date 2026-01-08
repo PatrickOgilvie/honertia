@@ -56,6 +56,15 @@ export class RouteConfigurationError extends Data.TaggedError('RouteConfiguratio
 }> {}
 
 /**
+ * Honertia Configuration Error - Missing or invalid setupHonertia configuration
+ * Thrown when a service (database, auth, schema) is not configured but accessed.
+ */
+export class HonertiaConfigurationError extends Data.TaggedError('HonertiaConfigurationError')<{
+  readonly message: string
+  readonly hint?: string
+}> {}
+
+/**
  * Redirect - Not an error, but uses same control flow
  * This is a tagged class (not error) for redirects
  */
@@ -74,3 +83,4 @@ export type AppError =
   | ForbiddenError
   | HttpError
   | RouteConfigurationError
+  | HonertiaConfigurationError

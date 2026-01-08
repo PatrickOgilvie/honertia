@@ -10,6 +10,7 @@ import {
   NotFoundError,
   ForbiddenError,
   HttpError,
+  HonertiaConfigurationError,
   Redirect,
 } from '../../src/effect/errors.js'
 
@@ -166,6 +167,62 @@ describe('Error Types', () => {
     })
   })
 
+  describe('HonertiaConfigurationError', () => {
+    test('creates configuration error with message', () => {
+      const error = new HonertiaConfigurationError({
+        message: 'DatabaseService is not configured',
+      })
+
+      expect(error._tag).toBe('HonertiaConfigurationError')
+      expect(error.message).toBe('DatabaseService is not configured')
+      expect(error.hint).toBeUndefined()
+    })
+
+    test('includes optional hint', () => {
+      const error = new HonertiaConfigurationError({
+        message: 'DatabaseService is not configured. Add it to setupHonertia.',
+        hint: 'Example: database: (c) => drizzle(c.env.DB)',
+      })
+
+      expect(error.hint).toBe('Example: database: (c) => drizzle(c.env.DB)')
+    })
+
+    test('can be caught with Effect.catchTag', () => {
+      const program = Effect.fail(
+        new HonertiaConfigurationError({
+          message: 'Service not configured',
+          hint: 'Configure it in setupHonertia',
+        })
+      ).pipe(
+        Effect.catchTag('HonertiaConfigurationError', (e) =>
+          Effect.succeed(`Caught: ${e.message} (${e.hint})`)
+        )
+      )
+
+      const result = Effect.runSync(program)
+      expect(result).toBe('Caught: Service not configured (Configure it in setupHonertia)')
+    })
+
+    test('can be thrown and caught as regular Error', () => {
+      const error = new HonertiaConfigurationError({
+        message: 'Test error',
+        hint: 'Test hint',
+      })
+
+      // HonertiaConfigurationError extends Error, so it can be thrown/caught normally
+      expect(() => {
+        throw error
+      }).toThrow('Test error')
+
+      try {
+        throw error
+      } catch (e: any) {
+        expect(e._tag).toBe('HonertiaConfigurationError')
+        expect(e.hint).toBe('Test hint')
+      }
+    })
+  })
+
   describe('Redirect', () => {
     test('creates redirect with URL and status', () => {
       const redirect = new Redirect({
@@ -211,6 +268,7 @@ describe('Error Handling Patterns', () => {
       new NotFoundError({ resource: 'Item' }),
       new ForbiddenError({ message: 'Forbidden' }),
       new HttpError({ status: 500, message: 'Server error' }),
+      new HonertiaConfigurationError({ message: 'Not configured' }),
     ]
 
     const tags = errors.map((e) => e._tag)
@@ -220,6 +278,7 @@ describe('Error Handling Patterns', () => {
       'NotFoundError',
       'ForbiddenError',
       'HttpError',
+      'HonertiaConfigurationError',
     ])
   })
 
