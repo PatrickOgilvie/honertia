@@ -13,21 +13,70 @@ import { loadUser, shareAuthMiddleware } from './effect/auth.js'
 import { effectBridge, type EffectBridgeConfig } from './effect/bridge.js'
 
 /**
+ * Extended Honertia configuration with database, auth, and schema.
+ */
+export interface HonertiaFullConfig<E extends Env = Env> extends HonertiaConfig {
+  /**
+   * Database factory function.
+   * Creates the database client for each request.
+   *
+   * @example
+   * ```typescript
+   * database: (c) => createDb(c.env.DATABASE_URL)
+   * ```
+   */
+  database?: (c: Context<E>) => unknown
+
+  /**
+   * Auth factory function.
+   * Creates the auth client for each request.
+   * Receives context with `c.var.db` already set (if database is configured).
+   *
+   * @example
+   * ```typescript
+   * auth: (c) => createAuth({
+   *   db: c.var.db,
+   *   secret: c.env.BETTER_AUTH_SECRET,
+   *   baseURL: new URL(c.req.url).origin,
+   * })
+   * ```
+   */
+  auth?: (c: Context<E>) => unknown
+
+  /**
+   * Drizzle schema for route model binding.
+   * Required if using Laravel-style route model binding.
+   *
+   * @example
+   * ```typescript
+   * import * as schema from '~/db/schema'
+   *
+   * setupHonertia({
+   *   honertia: { version, render, schema }
+   * })
+   * ```
+   */
+  schema?: Record<string, unknown>
+}
+
+/**
  * Configuration for Honertia setup.
  */
 export interface HonertiaSetupConfig<E extends Env = Env, CustomServices = never> {
   /**
-   * Honertia core configuration.
+   * Honertia core configuration including database, auth, and schema.
    */
-  honertia: HonertiaConfig
+  honertia: HonertiaFullConfig<E>
 
   /**
    * Effect bridge configuration (optional).
+   * Only needed for custom Effect services.
    */
   effect?: EffectBridgeConfig<E, CustomServices>
 
   /**
-   * Auth configuration (optional).
+   * Auth loading configuration (optional).
+   * Controls how the authenticated user is loaded from the session.
    */
   auth?: {
     userKey?: string
@@ -45,6 +94,7 @@ export interface HonertiaSetupConfig<E extends Env = Env, CustomServices = never
  * Sets up all Honertia middleware in the correct order.
  *
  * This bundles:
+ * - Database and auth setup (sets `c.var.db` and `c.var.auth`)
  * - `honertia()` - Core Honertia middleware
  * - `loadUser()` - Loads authenticated user into context
  * - `shareAuthMiddleware()` - Shares auth state with pages
@@ -53,11 +103,19 @@ export interface HonertiaSetupConfig<E extends Env = Env, CustomServices = never
  * @example
  * ```ts
  * import { setupHonertia, createTemplate } from 'honertia'
+ * import * as schema from '~/db/schema'
  *
  * app.use('*', setupHonertia({
  *   honertia: {
  *     version: '1.0.0',
  *     render: createTemplate({ title: 'My App', scripts: [...] }),
+ *     database: (c) => createDb(c.env.DATABASE_URL),
+ *     auth: (c) => createAuth({
+ *       db: c.var.db,
+ *       secret: c.env.BETTER_AUTH_SECRET,
+ *       baseURL: new URL(c.req.url).origin,
+ *     }),
+ *     schema,
  *   },
  * }))
  * ```
@@ -65,11 +123,35 @@ export interface HonertiaSetupConfig<E extends Env = Env, CustomServices = never
 export function setupHonertia<E extends Env, CustomServices = never>(
   config: HonertiaSetupConfig<E, CustomServices>
 ): MiddlewareHandler<E> {
+  const { database, auth, schema, ...honertiaConfig } = config.honertia
+
+  // Middleware to set up db and auth on c.var
+  const setupServices: MiddlewareHandler<E> = createMiddleware<E>(async (c, next) => {
+    // Set up database first (auth may depend on it)
+    if (database) {
+      c.set('db' as any, database(c))
+    }
+
+    // Set up auth (can access c.var.db)
+    if (auth) {
+      c.set('auth' as any, auth(c))
+    }
+
+    await next()
+  })
+
+  // Build effect bridge config, passing schema from honertia config
+  const effectConfig: EffectBridgeConfig<E, CustomServices> = {
+    ...config.effect,
+    schema,
+  }
+
   const middlewares: MiddlewareHandler<E>[] = [
-    honertia(config.honertia),
+    setupServices,
+    honertia(honertiaConfig),
     loadUser<E>(config.auth),
     shareAuthMiddleware<E>(),
-    effectBridge<E, CustomServices>(config.effect),
+    effectBridge<E, CustomServices>(effectConfig),
     ...(config.middleware ?? []),
   ]
 
@@ -145,9 +227,12 @@ export function createErrorHandlers<E extends Env>(config: ErrorHandlerConfig = 
   const onError = (err: Error, c: Context<E>) => {
     console.error(err)
     const isDev = showDevErrors && (c.env as any)?.[envKey] === devValue
+    const status = (err as any).status ?? 500
+    const hint = isDev ? (err as any).hint : undefined
     return c.var.honertia.render(component, {
-      status: 500,
+      status,
       message: isDev ? err.message : 'Something went wrong',
+      ...(hint && { hint }),
     })
   }
 

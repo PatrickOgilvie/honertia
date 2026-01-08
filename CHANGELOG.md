@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.18] - 2026-01-08
+
+### Changed
+
+- **BREAKING**: Consolidated `setupHonertia` configuration - `database`, `auth`, and `schema` now go in the `honertia` object instead of separate config
+  - Before: `setupHonertia({ honertia: {...}, effect: { database, schema } })`
+  - After: `setupHonertia({ honertia: { database, auth, schema, ... } })`
+- `setupHonertia` now automatically sets `c.var.db` and `c.var.auth` - no need for manual middleware
+- Schema is now stored in Hono context and shared across all `effectRoutes()` calls - no need to pass schema to each route group
+- Removed `database` from `EffectBridgeConfig` (now in `HonertiaFullConfig`)
+- Error hint for missing schema now correctly references `setupHonertia({ honertia: { schema } })`
+
+### Added
+
+- `HonertiaFullConfig` interface extending `HonertiaConfig` with `database`, `auth`, and `schema` options
+- Helpful error messages when using `DatabaseService` or `AuthService` without configuring them:
+  - `DatabaseService is not configured. Add it to setupHonertia: setupHonertia({ honertia: { database: (c) => createDb(...) } })`
+  - `AuthService is not configured. Add it to setupHonertia: setupHonertia({ honertia: { auth: (c) => createAuth(...) } })`
+- Error `hint` prop now passed to error component in dev mode (shows configuration examples)
+- `getEffectSchema()` helper to retrieve schema from Hono context
+- Comprehensive test suite for `setupHonertia` configuration (14 tests)
+
+### Fixed
+
+- Auth factory now has access to `c.var.db` (database is set up first)
+
 ## [0.1.17] - 2026-01-08
 
 ### Changed

@@ -7,7 +7,7 @@
 import { Effect, Exit, Layer, Schema as S } from 'effect'
 import type { Context as HonoContext, Hono, MiddlewareHandler, Env } from 'hono'
 import { effectHandler } from './handler.js'
-import { buildContextLayer, type EffectBridgeConfig } from './bridge.js'
+import { buildContextLayer, getEffectSchema, type EffectBridgeConfig } from './bridge.js'
 import {
   type AppError,
   Redirect,
@@ -238,19 +238,22 @@ export class EffectRouteBuilder<
       // Resolve route model bindings if we have any and schema is configured
       let boundModelsLayer: Layer.Layer<BoundModels, never, never>
 
-      if (bindings.length > 0 && bridgeConfig?.schema) {
-        const db = bridgeConfig.database ? bridgeConfig.database(c) : (c as { var?: { db?: unknown } }).var?.db
+      // Get schema from bridgeConfig or from context (set by setupHonertia/effectBridge)
+      const schema = bridgeConfig?.schema ?? getEffectSchema(c)
+
+      if (bindings.length > 0 && schema) {
+        const db = (c as { var?: { db?: unknown } }).var?.db
         if (!db) {
           return c.notFound() as Response
         }
 
-        const result = await this.resolveBindings(c, bindings, db, bridgeConfig.schema)
+        const result = await this.resolveBindings(c, bindings, db, schema)
         if (result instanceof Response) {
           return result
         }
 
         boundModelsLayer = Layer.succeed(BoundModels, result as ReadonlyMap<string, unknown>)
-      } else if (bindings.length > 0 && !bridgeConfig?.schema) {
+      } else if (bindings.length > 0 && !schema) {
         // Bindings exist but no schema - provide a map that signals this for better errors
         const unconfiguredMap = new Map<string, unknown>()
         unconfiguredMap.set('__schema_not_configured__', true)

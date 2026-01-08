@@ -30,7 +30,6 @@ import {
  * @example
  * // Provide Cloudflare Worker bindings as a service
  * effectBridge<Env, BindingsService>({
- *   database: (c) => createDb(c.env.DATABASE_URL),
  *   services: (c) => Layer.succeed(BindingsService, c.env),
  * })
  *
@@ -44,7 +43,6 @@ import {
  * })
  */
 export interface EffectBridgeConfig<E extends Env, CustomServices = never> {
-  database?: (c: HonoContext<E>) => unknown
   /**
    * Custom services to provide to all Effect handlers.
    * Return a Layer that provides your custom services.
@@ -52,14 +50,8 @@ export interface EffectBridgeConfig<E extends Env, CustomServices = never> {
   services?: (c: HonoContext<E>) => Layer.Layer<CustomServices, never, never>
   /**
    * Drizzle schema for route model binding.
-   * Required if using Laravel-style route model binding.
-   *
-   * @example
-   * ```typescript
-   * import * as schema from '~/db/schema'
-   *
-   * effectRoutes(app, { schema })
-   * ```
+   * Usually configured via `setupHonertia({ honertia: { schema } })`.
+   * Can also be passed here for standalone effectBridge usage.
    */
   schema?: Record<string, unknown>
 }
@@ -70,7 +62,39 @@ export interface EffectBridgeConfig<E extends Env, CustomServices = never> {
 const EFFECT_RUNTIME = Symbol('effectRuntime')
 
 /**
- * Extend Hono context with Effect runtime.
+ * Symbol for storing schema in Hono context.
+ */
+const EFFECT_SCHEMA = Symbol('effectSchema')
+
+/**
+ * Creates a proxy that throws a helpful error when any property is accessed.
+ * Used when a service (database, auth) is not configured but the user tries to use it.
+ */
+function createUnconfiguredServiceProxy(
+  serviceName: string,
+  configPath: string,
+  example: string
+): unknown {
+  const message = `${serviceName} is not configured. Add it to setupHonertia: setupHonertia({ honertia: { ${configPath} } })`
+
+  return new Proxy(
+    {},
+    {
+      get(_, prop) {
+        // Allow certain properties that might be checked without meaning to "use" the service
+        if (prop === 'then' || prop === Symbol.toStringTag || prop === Symbol.iterator) {
+          return undefined
+        }
+        const error = new Error(message)
+        ;(error as any).hint = `Example: ${example}`
+        throw error
+      },
+    }
+  )
+}
+
+/**
+ * Extend Hono context with Effect runtime and schema.
  */
 declare module 'hono' {
   interface ContextVariableMap {
@@ -83,6 +107,7 @@ declare module 'hono' {
       | ResponseFactoryService,
       never
     >
+    [EFFECT_SCHEMA]?: Record<string, unknown>
   }
 }
 
@@ -158,21 +183,37 @@ export function buildContextLayer<E extends Env, CustomServices = never>(
   const responseLayer = Layer.succeed(ResponseFactoryService, createResponseFactory(c))
   const honertiaLayer = Layer.succeed(HonertiaService, createHonertiaRenderer(c))
 
-  // Build optional layers (cast to satisfy type checker - actual type comes from augmentation)
-  const databaseLayer = config?.database
-    ? Layer.succeed(DatabaseService, config.database(c) as DatabaseType)
-    : Layer.succeed(DatabaseService, (c as any).var?.db as DatabaseType)
+  // Database layer - provide helpful error proxy if not configured
+  const db = (c as any).var?.db
+  const databaseLayer = Layer.succeed(
+    DatabaseService,
+    (db ??
+      createUnconfiguredServiceProxy(
+        'DatabaseService',
+        'database: (c) => createDb(...)',
+        'database: (c) => drizzle(c.env.DB)'
+      )) as DatabaseType
+  )
+
+  // Auth layer - provide helpful error proxy if not configured
+  const auth = (c as any).var?.auth
+  const authLayer = Layer.succeed(
+    AuthService,
+    (auth ??
+      createUnconfiguredServiceProxy(
+        'AuthService',
+        'auth: (c) => createAuth(...)',
+        'auth: (c) => betterAuth({ database: c.var.db, ... })'
+      )) as AuthType
+  )
 
   let baseLayer = Layer.mergeAll(
     requestLayer,
     responseLayer,
     honertiaLayer,
-    databaseLayer
+    databaseLayer,
+    authLayer
   )
-
-  if ((c as any).var?.auth) {
-    baseLayer = Layer.merge(baseLayer, Layer.succeed(AuthService, (c as any).var.auth as AuthType))
-  }
 
   if ((c as any).var?.authUser) {
     baseLayer = Layer.merge(baseLayer, Layer.succeed(AuthUserService, (c as any).var.authUser as AuthUser))
@@ -219,6 +260,11 @@ export function effectBridge<E extends Env, CustomServices = never>(
     // Store runtime in context
     c.set(EFFECT_RUNTIME as any, runtime)
 
+    // Store schema in context for route model binding
+    if (config?.schema) {
+      c.set(EFFECT_SCHEMA as any, config.schema)
+    }
+
     try {
       await next()
     } finally {
@@ -226,4 +272,13 @@ export function effectBridge<E extends Env, CustomServices = never>(
       await runtime.dispose()
     }
   }
+}
+
+/**
+ * Get the schema from Hono context (set by effectBridge).
+ */
+export function getEffectSchema<E extends Env>(
+  c: HonoContext<E>
+): Record<string, unknown> | undefined {
+  return (c as any).var?.[EFFECT_SCHEMA]
 }

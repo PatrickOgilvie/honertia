@@ -55,6 +55,7 @@ export {
   effectBridge,
   buildContextLayer,
   getEffectRuntime,
+  getEffectSchema,
   type EffectBridgeConfig,
 } from './bridge.js'
 

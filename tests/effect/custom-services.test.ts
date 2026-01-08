@@ -197,8 +197,9 @@ describe('Custom Services via effectBridge', () => {
       })
     )
 
-    // Simulate Cloudflare Worker bindings
+    // Simulate Cloudflare Worker bindings and set up db
     app.use('*', async (c, next) => {
+      c.set('db' as any, { name: 'custom-db' })
       ;(c.env as any) = {
         KV_DATA: { 'user:123': 'John Doe', 'config:theme': 'dark' },
         FEATURES: ['new-dashboard', 'beta-api'],
@@ -206,9 +207,8 @@ describe('Custom Services via effectBridge', () => {
       await next()
     })
 
-    // Use effectRoutes with both database and custom services config
+    // Use effectRoutes with custom services config (db is read from c.var.db)
     effectRoutes<TestEnv, BindingsService>(app, {
-      database: () => ({ name: 'custom-db' }),
       services: (c) =>
         Layer.succeed(BindingsService, {
           KV: createMockKV(c.env.KV_DATA),

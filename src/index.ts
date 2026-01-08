@@ -17,6 +17,7 @@ export {
   createErrorHandlers,
   registerErrorHandlers,
   type HonertiaSetupConfig,
+  type HonertiaFullConfig,
   type ErrorHandlerConfig,
 } from './setup.js'
 

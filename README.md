@@ -84,18 +84,7 @@ class BindingsService extends Context.Tag('app/Bindings')<
   { KV: KVNamespace }
 >() {}
 
-// Request-scoped setup: put db/auth on c.var so Honertia/Effect can read them.
-app.use('*', async (c, next) => {
-  c.set('db', createDb(c.env.DATABASE_URL))
-  c.set('auth', createAuth({
-    db: c.var.db,
-    secret: c.env.BETTER_AUTH_SECRET,
-    baseURL: new URL(c.req.url).origin,
-  }))
-  await next()
-})
-
-// Honertia bundles the core middleware + auth loading + Effect runtime setup.
+// Honertia bundles db/auth setup + core middleware + Effect runtime.
 app.use('*', setupHonertia<Env, BindingsService>({
   honertia: {
     // Use your asset manifest hash so Inertia reloads on deploy.
@@ -109,9 +98,19 @@ app.use('*', setupHonertia<Env, BindingsService>({
         head: isProd ? '' : vite.hmrHead(),
       }
     }),
+    // Database factory (creates c.var.db for each request)
+    database: (c) => createDb(c.env.DATABASE_URL),
+    // Auth factory (can access c.var.db since database runs first)
+    auth: (c) => createAuth({
+      db: c.var.db,
+      secret: c.env.BETTER_AUTH_SECRET,
+      baseURL: new URL(c.req.url).origin,
+    }),
+    // Schema for route model binding (optional)
+    schema,
   },
   effect: {
-    // Expose Cloudflare bindings to Effect handlers via a service layer.
+    // Custom Effect services (e.g., Cloudflare bindings)
     services: (c) => Layer.succeed(BindingsService, {
       KV: c.env.MY_KV,
     }),
@@ -119,7 +118,6 @@ app.use('*', setupHonertia<Env, BindingsService>({
   // Optional: extra Hono middleware in the same chain.
   middleware: [
     logger(),
-    // register additional middleware here...
   ],
 }))
 
@@ -963,13 +961,19 @@ declare module 'honertia/effect' {
 }
 ```
 
-2. Pass your schema to `effectRoutes`:
+2. Pass your schema to `setupHonertia`:
 
 ```typescript
 import * as schema from '~/db/schema'
 
-effectRoutes(app, { schema })
-  .get('/projects/{project}', showProject)
+app.use('*', setupHonertia({
+  honertia: {
+    version: '1.0.0',
+    render: createTemplate({ ... }),
+    database: (c) => createDb(c.env.DATABASE_URL),
+    schema,  // Schema is shared with all effectRoutes
+  },
+}))
 ```
 
 **Basic Usage:**
@@ -980,7 +984,7 @@ import { bound } from 'honertia/effect'
 // Route: /projects/{project}
 // Automatically queries: SELECT * FROM projects WHERE id = :project
 
-effectRoutes(app, { schema }).get('/projects/{project}', showProject)
+effectRoutes(app).get('/projects/{project}', showProject)
 
 const showProject = Effect.gen(function* () {
   const project = yield* bound('project')  // Already fetched, guaranteed to exist
@@ -994,7 +998,7 @@ By default, bindings query the `id` column. Use `{param:column}` syntax to bind 
 
 ```typescript
 // Bind by slug instead of id
-effectRoutes(app, { schema }).get('/projects/{project:slug}', showProject)
+effectRoutes(app).get('/projects/{project:slug}', showProject)
 // Queries: SELECT * FROM projects WHERE slug = :project
 ```
 
@@ -1004,7 +1008,7 @@ For nested routes, Honertia automatically scopes child models to their parents u
 
 ```typescript
 // Route: /users/{user}/posts/{post}
-effectRoutes(app, { schema }).get('/users/{user}/posts/{post}', showUserPost)
+effectRoutes(app).get('/users/{user}/posts/{post}', showUserPost)
 
 // Queries:
 // 1. SELECT * FROM users WHERE id = :user
@@ -1039,7 +1043,7 @@ If no relation is found, the child is resolved without scoping (useful for unrel
 Route model binding and param validation work together. Validation runs first:
 
 ```typescript
-effectRoutes(app, { schema }).get(
+effectRoutes(app).get(
   '/projects/{project}',
   showProject,
   { params: S.Struct({ project: uuid }) }  // Validates UUID format first
@@ -1058,7 +1062,7 @@ You can mix Laravel-style `{binding}` with Hono-style `:param` in the same route
 ```typescript
 // :version is a regular Hono param (not bound)
 // {project} is resolved from the database
-effectRoutes(app, { schema }).get(
+effectRoutes(app).get(
   '/api/:version/projects/{project}',
   showProject
 )

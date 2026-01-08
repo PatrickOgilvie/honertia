@@ -133,7 +133,7 @@ export const bound = <K extends string>(
     if (models.has('__schema_not_configured__')) {
       return yield* new RouteConfigurationError({
         message: `Route model binding requires schema configuration. Cannot resolve bound('${key}') without schema.`,
-        hint: `Pass your schema to effectRoutes: effectRoutes(app, { schema })`
+        hint: `Pass your schema to setupHonertia: setupHonertia({ honertia: { schema } })`
       })
     }
 
