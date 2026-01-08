@@ -164,10 +164,18 @@ type SafeDelete<Tx> = Tx extends { delete: (...args: infer A) => infer I }
 
 export type SafeTx<Tx> = WrapBuilder<SafeDelete<SafeUpdate<SafeInsert<Tx>>>>
 
+/**
+ * Error type shown when database doesn't support transactions.
+ */
+interface TransactionNotSupported {
+  readonly __error: 'Database client does not support transactions. Ensure your database exposes a transaction() method.'
+  readonly __hint: 'Expected signature: db.transaction((tx) => Promise<T>) => Promise<T>. See https://github.com/patrickogilvie/honertia#transactions'
+}
+
 type TransactionClient<DB> =
   DB extends { transaction: (fn: (tx: infer Tx) => Promise<any>) => Promise<any> }
     ? Tx
-    : never
+    : TransactionNotSupported
 
 /**
  * Run multiple database operations in a transaction.

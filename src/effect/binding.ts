@@ -74,6 +74,42 @@ export class BoundModels extends Context.Tag('honertia/BoundModels')<
 >() {}
 
 /**
+ * Pluralize a key for schema lookup.
+ * Matches the runtime pluralize() function logic.
+ */
+type Pluralize<S extends string> =
+  S extends `${infer _}${'a' | 'e' | 'i' | 'o' | 'u'}y` ? `${S}s` :           // day → days (vowel + y)
+  S extends `${infer Base}y` ? `${Base}ies` :                                  // category → categories
+  S extends `${infer _}${'s' | 'ss' | 'x' | 'z' | 'zz' | 'ch' | 'sh'}` ? `${S}es` : // class, buzz, box, match → +es
+  `${S}s`                                                                       // project → projects
+
+/**
+ * Error type shown when trying to use bound() without schema configured.
+ */
+interface BoundModelNotConfigured<K extends string> {
+  readonly __error: `Cannot infer type for bound('${K}'). Schema not configured for route model binding.`
+  readonly __hint: 'Add module augmentation: declare module "honertia/effect" { interface HonertiaDatabaseType { schema: typeof schema } }'
+}
+
+/**
+ * Lookup a table type from schema, trying pluralized key first.
+ * Shows helpful error if schema is not configured.
+ */
+export type BoundModel<K extends string> =
+  // Check if schema is configured (has __error means it's the error type)
+  SchemaType extends { __error: string }
+    ? BoundModelNotConfigured<K>
+    : Pluralize<K> extends keyof SchemaType
+      ? SchemaType[Pluralize<K>] extends Table
+        ? SchemaType[Pluralize<K>]['$inferSelect']
+        : unknown
+      : K extends keyof SchemaType
+        ? SchemaType[K] extends Table
+          ? SchemaType[K]['$inferSelect']
+          : unknown
+        : unknown
+
+/**
  * Type-safe accessor for bound models.
  *
  * @example
@@ -85,11 +121,7 @@ export class BoundModels extends Context.Tag('honertia/BoundModels')<
 export const bound = <K extends string>(
   key: K
 ): Effect.Effect<
-  K extends keyof SchemaType
-    ? SchemaType[K] extends Table
-      ? SchemaType[K]['$inferSelect']
-      : unknown
-    : unknown,
+  BoundModel<K>,
   BoundModelNotFound,
   BoundModels
 > =>

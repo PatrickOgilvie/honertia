@@ -26,11 +26,28 @@ import { Context } from 'effect'
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface HonertiaDatabaseType {}
 
-/** Extract database type from augmented interface, defaults to unknown */
-export type DatabaseType = HonertiaDatabaseType extends { type: infer T } ? T : unknown
+/**
+ * Error type shown when HonertiaDatabaseType.type is not configured.
+ * This provides a helpful error message in IDE tooltips.
+ */
+interface DatabaseNotConfigured {
+  readonly __error: 'DatabaseService type not configured. Add module augmentation: declare module "honertia/effect" { interface HonertiaDatabaseType { type: YourDbType } }'
+  readonly __hint: 'See https://github.com/patrickogilvie/honertia#typescript-setup'
+}
 
-/** Extract schema type from augmented interface, defaults to Record<string, unknown> */
-export type SchemaType = HonertiaDatabaseType extends { schema: infer T } ? T : Record<string, unknown>
+/**
+ * Error type shown when HonertiaDatabaseType.schema is not configured.
+ */
+interface SchemaNotConfigured {
+  readonly __error: 'Schema not configured for route model binding. Add module augmentation: declare module "honertia/effect" { interface HonertiaDatabaseType { schema: typeof schema } }'
+  readonly __hint: 'This is optional - only needed if using bound() for route model binding'
+}
+
+/** Extract database type from augmented interface, shows error type if not configured */
+export type DatabaseType = HonertiaDatabaseType extends { type: infer T } ? T : DatabaseNotConfigured
+
+/** Extract schema type from augmented interface, shows error type if not configured */
+export type SchemaType = HonertiaDatabaseType extends { schema: infer T } ? T : SchemaNotConfigured
 
 /**
  * Augmentable interface for auth type.
@@ -48,8 +65,16 @@ export type SchemaType = HonertiaDatabaseType extends { schema: infer T } ? T : 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface HonertiaAuthType {}
 
-/** Extract auth type from augmented interface, defaults to unknown */
-export type AuthType = HonertiaAuthType extends { type: infer T } ? T : unknown
+/**
+ * Error type shown when HonertiaAuthType.type is not configured.
+ */
+interface AuthNotConfigured {
+  readonly __error: 'AuthService type not configured. Add module augmentation: declare module "honertia/effect" { interface HonertiaAuthType { type: YourAuthType } }'
+  readonly __hint: 'This is optional - only needed if using AuthService'
+}
+
+/** Extract auth type from augmented interface, shows error type if not configured */
+export type AuthType = HonertiaAuthType extends { type: infer T } ? T : AuthNotConfigured
 
 /**
  * Database Service - Generic database client

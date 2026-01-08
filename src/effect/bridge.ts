@@ -17,6 +17,8 @@ import {
   type RequestContext,
   type ResponseFactory,
   type HonertiaRenderer,
+  type DatabaseType,
+  type AuthType,
 } from './services.js'
 
 /**
@@ -156,10 +158,10 @@ export function buildContextLayer<E extends Env, CustomServices = never>(
   const responseLayer = Layer.succeed(ResponseFactoryService, createResponseFactory(c))
   const honertiaLayer = Layer.succeed(HonertiaService, createHonertiaRenderer(c))
 
-  // Build optional layers
+  // Build optional layers (cast to satisfy type checker - actual type comes from augmentation)
   const databaseLayer = config?.database
-    ? Layer.succeed(DatabaseService, config.database(c))
-    : Layer.succeed(DatabaseService, (c as any).var?.db)
+    ? Layer.succeed(DatabaseService, config.database(c) as DatabaseType)
+    : Layer.succeed(DatabaseService, (c as any).var?.db as DatabaseType)
 
   let baseLayer = Layer.mergeAll(
     requestLayer,
@@ -169,7 +171,7 @@ export function buildContextLayer<E extends Env, CustomServices = never>(
   )
 
   if ((c as any).var?.auth) {
-    baseLayer = Layer.merge(baseLayer, Layer.succeed(AuthService, (c as any).var.auth))
+    baseLayer = Layer.merge(baseLayer, Layer.succeed(AuthService, (c as any).var.auth as AuthType))
   }
 
   if ((c as any).var?.authUser) {

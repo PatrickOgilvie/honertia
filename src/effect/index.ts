@@ -103,9 +103,11 @@ export {
   BoundModels,
   BoundModelNotFound,
   bound,
+  pluralize,
   parseBindings,
   toHonoPath,
   type ParsedBinding,
+  type BoundModel,
 } from './binding.js'
 
 // Auth

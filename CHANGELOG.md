@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.15] - 2026-01-08
+
+### Added
+
+- Helpful error types when services are not configured via module augmentation
+  - `DatabaseService` shows: "DatabaseService type not configured. Add module augmentation..."
+  - `AuthService` shows: "AuthService type not configured..."
+  - `bound('project')` shows: "Cannot infer type for bound('project'). Schema not configured..."
+  - `dbTransaction` shows: "Database client does not support transactions..." when transaction method is missing
+- Compile-time type tests for `Validated`/`Trusted` branding and `SafeTx` wrappers
+- Exported `pluralize` function from `honertia/effect`
+
+### Fixed
+
+- `bound('project')` now correctly infers types by pluralizing to match schema keys (`project` → `projects`)
+- `Pluralize<K>` type now handles double consonants correctly (`buzz` → `buzzes`, `quiz` → `quizzes`)
+- Exported `BoundModel<K>` type for explicit typing when needed
+
 ## [0.1.14] - 2026-01-07
 
 ### Fixed
