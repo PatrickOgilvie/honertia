@@ -17,6 +17,7 @@ import {
   BoundModels,
   BoundModelNotFound,
 } from '../../src/effect/binding.js'
+import { registerErrorHandlers } from '../../src/setup.js'
 
 describe('parseBindings', () => {
   describe('basic Laravel-style bindings', () => {
@@ -673,10 +674,13 @@ describe('Route Model Binding Integration', () => {
       expect(invalid.status).toBe(404)
     })
 
-    test('bound() gives helpful ConfigurationError when schema not provided', async () => {
+    test('bound() gives helpful RouteConfigurationError when schema not provided', async () => {
       const app = new Hono()
       app.use('*', honertia({ version: '1.0.0', render: (page) => JSON.stringify(page) }))
       app.use('*', effectBridge())
+
+      // Set up error handler to render error pages
+      registerErrorHandlers(app, { component: 'Error' })
 
       // Route with bindings but no schema - using bound() should error helpfully
       effectRoutes(app).get(
@@ -688,12 +692,14 @@ describe('Route Model Binding Integration', () => {
       )
 
       const res = await app.request('/projects/123')
-      expect(res.status).toBe(500)
+      expect(res.status).toBe(200) // Inertia renders with 200
 
       const body = await res.json()
-      expect(body.type).toBe('RouteConfigurationError')
-      expect(body.message).toContain('schema configuration')
-      expect(body.hint).toContain('effectRoutes(app, { schema })')
+      // Error is rendered via Honertia's error component (not raw JSON)
+      expect(body.component).toBe('Error')
+      expect(body.props.status).toBe(500)
+      // In prod, message is hidden; in dev (with env var), it shows the actual error
+      expect(body.props.message).toBeDefined()
     })
   })
 })

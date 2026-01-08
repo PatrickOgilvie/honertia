@@ -1243,7 +1243,204 @@ return yield* forbidden('You cannot edit this project')
 
 ## Error Handling
 
-Honertia provides typed errors:
+Honertia provides typed errors that integrate with Effect's error channel. Each error type has specific handling behavior designed for Inertia-style applications.
+
+### Built-in Error Types
+
+| Error Type | HTTP Status | Handling Behavior |
+|------------|-------------|-------------------|
+| `ValidationError` | 422 / redirect | Re-renders form with field errors, or redirects back |
+| `UnauthorizedError` | 302/303 | Redirects to login page |
+| `NotFoundError` | 404 | Uses Hono's `notFound()` handler → renders via Honertia |
+| `ForbiddenError` | 403 | Returns JSON response (for API compatibility) |
+| `HttpError` | Custom | Returns JSON with custom status (developer-controlled) |
+| `RouteConfigurationError` | 500 | Throws to Hono's `onError` → renders error page |
+| Unexpected errors | 500 | Throws to Hono's `onError` → renders error page |
+
+### Error Type Details
+
+#### `ValidationError`
+
+Thrown when request validation fails. Automatically re-renders the form with field-level errors.
+
+```typescript
+import { ValidationError, validateRequest } from 'honertia/effect'
+
+// Automatic: validateRequest throws ValidationError on failure
+const input = yield* validateRequest(schema, {
+  errorComponent: 'Projects/Create', // Re-renders this component with errors
+})
+
+// Manual: throw ValidationError directly
+yield* Effect.fail(new ValidationError({
+  errors: { email: 'Invalid email format' },
+  component: 'Auth/Register', // Optional: component to re-render
+}))
+```
+
+**Behavior:**
+- If request prefers JSON (API calls): returns `{ errors: {...} }` with 422 status
+- If `component` is set: re-renders that component with errors in props
+- Otherwise: redirects back to referer with errors in session
+
+#### `UnauthorizedError`
+
+Thrown when authentication is required but the user is not logged in.
+
+```typescript
+import { UnauthorizedError, authorize } from 'honertia/effect'
+
+// Automatic: authorize() throws UnauthorizedError if no user
+const auth = yield* authorize()
+
+// Manual: throw with custom redirect
+yield* Effect.fail(new UnauthorizedError({
+  message: 'Please log in to continue',
+  redirectTo: '/login', // Defaults to '/login'
+}))
+```
+
+**Behavior:** Redirects to the specified URL (302 for regular requests, 303 for Inertia requests).
+
+#### `NotFoundError`
+
+Thrown when a requested resource doesn't exist.
+
+```typescript
+import { NotFoundError, notFound } from 'honertia/effect'
+
+// Helper function
+return yield* notFound('Project', projectId)
+
+// Manual
+yield* Effect.fail(new NotFoundError({
+  resource: 'Project',
+  id: projectId,
+}))
+```
+
+**Behavior:** Triggers Hono's `notFound()` handler. If you've set up `registerErrorHandlers()`, this renders your error component with status 404.
+
+#### `ForbiddenError`
+
+Thrown when the user is authenticated but not authorized to perform an action.
+
+```typescript
+import { ForbiddenError, forbidden, authorize } from 'honertia/effect'
+
+// Automatic: authorize() throws ForbiddenError if check fails
+const auth = yield* authorize((a) => a.user.role === 'admin')
+
+// Helper function
+return yield* forbidden('You cannot edit this project')
+
+// Manual
+yield* Effect.fail(new ForbiddenError({
+  message: 'Admin access required',
+}))
+```
+
+**Behavior:** Returns JSON `{ message: "..." }` with 403 status. This is intentionally JSON for API compatibility.
+
+#### `HttpError`
+
+A generic error for custom HTTP responses. Use when you need precise control over the response.
+
+```typescript
+import { HttpError, httpError } from 'honertia/effect'
+
+// Helper function
+return yield* httpError(429, 'Rate limited', { retryAfter: 60 })
+
+// Manual
+yield* Effect.fail(new HttpError({
+  status: 429,
+  message: 'Too many requests',
+  body: { retryAfter: 60 }, // Optional additional data
+}))
+```
+
+**Behavior:** Returns JSON `{ message: "...", ...body }` with the specified status code.
+
+#### `RouteConfigurationError`
+
+Thrown when there's a developer configuration error, such as using route model binding without providing a schema.
+
+```typescript
+import { RouteConfigurationError } from 'honertia/effect'
+
+// This error is thrown automatically when:
+// - You use bound('project') but didn't pass schema to effectRoutes()
+// - Other route configuration mistakes
+
+// You typically don't throw this manually
+```
+
+**Behavior:** Re-throws to Hono's `onError` handler, which renders your error component. The error message and hint are logged to the console for debugging.
+
+### Setting Up Error Pages
+
+To render errors via Honertia instead of returning plain text/JSON, use `registerErrorHandlers`:
+
+```typescript
+import { registerErrorHandlers } from 'honertia'
+
+// In your app setup
+registerErrorHandlers(app, {
+  component: 'Error',        // Your error page component
+  showDevErrors: true,       // Show detailed errors in development
+  envKey: 'ENVIRONMENT',     // Env var to check
+  devValue: 'development',   // Value that enables dev errors
+})
+```
+
+Your `Error` component receives:
+
+```tsx
+// src/pages/Error.tsx
+interface ErrorProps {
+  status: number    // 404, 500, etc.
+  message: string   // Error message (detailed in dev, generic in prod)
+}
+
+export default function Error({ status, message }: ErrorProps) {
+  return (
+    <div className="error-page">
+      <h1>{status}</h1>
+      <p>{message}</p>
+    </div>
+  )
+}
+```
+
+### Error Handling Flow
+
+```
+Effect Handler
+     │
+     ▼
+┌─────────────────────────────────────────────────────────┐
+│                    errorToResponse()                     │
+├─────────────────────────────────────────────────────────┤
+│ ValidationError  → Re-render form / redirect back       │
+│ UnauthorizedError → Redirect to login                   │
+│ NotFoundError    → c.notFound() → Hono notFound handler │
+│ ForbiddenError   → JSON 403                             │
+│ HttpError        → JSON with custom status              │
+│ Other errors     → throw → Hono onError handler         │
+└─────────────────────────────────────────────────────────┘
+                           │
+                           ▼ (for thrown errors)
+┌─────────────────────────────────────────────────────────┐
+│              Hono onError handler                        │
+│         (from registerErrorHandlers)                     │
+├─────────────────────────────────────────────────────────┤
+│ Renders error component via Honertia                    │
+│ Shows detailed message in dev, generic in prod          │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Usage Examples
 
 ```typescript
 import {
@@ -1252,7 +1449,7 @@ import {
   NotFoundError,
   ForbiddenError,
   HttpError,
-} from 'honertia'
+} from 'honertia/effect'
 
 // Validation errors automatically re-render with field errors
 const input = yield* validateRequest(schema, {

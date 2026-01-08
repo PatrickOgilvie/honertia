@@ -11,21 +11,46 @@ import {
   ValidationError,
   UnauthorizedError,
   NotFoundError,
-  ForbiddenError,
   HttpError,
   RouteConfigurationError,
   Redirect,
   type AppError,
 } from './errors.js'
-import { HonertiaService } from './services.js'
+
+/**
+ * Convert an AppError to a throwable Error for Hono's onError handler.
+ * Preserves error metadata like status codes and hints.
+ */
+function toThrowableError(error: AppError): Error {
+  const err = new Error(error.message)
+  err.name = error._tag
+
+  // Preserve status for HttpError
+  if (error instanceof HttpError) {
+    ;(err as any).status = error.status
+  }
+
+  // Preserve hint for RouteConfigurationError
+  if (error instanceof RouteConfigurationError && error.hint) {
+    ;(err as any).hint = error.hint
+  }
+
+  return err
+}
 
 /**
  * Convert an Effect error to an HTTP response.
+ *
+ * Most errors are re-thrown so Hono's onError handler can render them
+ * via Honertia's error component. Only errors that need special handling
+ * (ValidationError for form re-rendering, UnauthorizedError for redirects)
+ * return responses directly.
  */
 export async function errorToResponse<E extends Env>(
   error: AppError,
   c: HonoContext<E>
 ): Promise<Response> {
+  // ValidationError: re-render form with errors or redirect back
   if (error instanceof ValidationError) {
     const isInertia = c.req.header('X-Inertia') === 'true'
     const prefersJson =
@@ -49,39 +74,30 @@ export async function errorToResponse<E extends Env>(
     return c.redirect(referer, 303)
   }
 
+  // UnauthorizedError: redirect to login
   if (error instanceof UnauthorizedError) {
     const isInertia = c.req.header('X-Inertia') === 'true'
     const redirectTo = error.redirectTo ?? '/login'
     return c.redirect(redirectTo, isInertia ? 303 : 302)
   }
 
-  if (error instanceof ForbiddenError) {
-    return c.json({ message: error.message }, 403)
-  }
-
+  // NotFoundError: use Hono's notFound handler (renders via Honertia if configured)
   if (error instanceof NotFoundError) {
     return c.notFound() as Response
   }
 
+  // ForbiddenError: return 403 JSON (useful for API routes)
+  if ('_tag' in error && error._tag === 'ForbiddenError') {
+    return c.json({ message: error.message }, 403)
+  }
+
+  // HttpError: return custom status JSON (gives developers control over HTTP responses)
   if (error instanceof HttpError) {
     return c.json({ message: error.message, ...(error.body as object) }, error.status as any)
   }
 
-  if (error instanceof RouteConfigurationError) {
-    console.error(`[honertia] Route configuration error: ${error.message}`)
-    if (error.hint) {
-      console.error(`[honertia] Hint: ${error.hint}`)
-    }
-    return c.json({
-      message: error.message,
-      hint: error.hint,
-      type: 'RouteConfigurationError'
-    }, 500)
-  }
-
-  // Unknown error
-  console.error('Unhandled error:', error)
-  return c.json({ message: 'Internal server error' }, 500)
+  // All other errors (RouteConfigurationError, etc.): throw to Hono's onError handler
+  throw toThrowableError(error)
 }
 
 /**
@@ -127,6 +143,9 @@ export function effectHandler<E extends Env, R, Err extends AppError>(
 
 /**
  * Handle an Effect exit value.
+ *
+ * Failures are converted to responses via errorToResponse.
+ * Defects (unexpected errors) are re-thrown for Hono's onError handler.
  */
 async function handleExit<E extends Env>(
   exit: Exit.Exit<Response | Redirect, AppError>,
@@ -140,7 +159,7 @@ async function handleExit<E extends Env>(
     return value
   }
 
-  // Handle failure
+  // Handle typed failures
   const cause = exit.cause
 
   if (Cause.isFailure(cause)) {
@@ -150,15 +169,22 @@ async function handleExit<E extends Env>(
     }
   }
 
-  // Handle defects (unexpected errors)
+  // Handle defects (unexpected errors) - throw to Hono's onError handler
   if (Cause.isDie(cause)) {
     const defect = Cause.dieOption(cause)
     if (defect._tag === 'Some') {
-      console.error('Effect defect:', defect.value)
+      const err = defect.value
+      // If it's already an Error, throw it directly
+      if (err instanceof Error) {
+        throw err
+      }
+      // Otherwise wrap it
+      throw new Error(String(err))
     }
   }
 
-  return c.json({ message: 'Internal server error' }, 500)
+  // Fallback: throw generic error for Hono's onError handler
+  throw new Error('Unknown effect failure')
 }
 
 /**
