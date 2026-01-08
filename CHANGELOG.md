@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.16] - 2026-01-08
+
+### Added
+
+- Route model binding now provides a helpful `RouteConfigurationError` when schema is not configured, with clear error messages and hints for setup
+- `RouteConfigurationError` is exported and handled in all relevant places (errors, handler, index)
+- Route model binding integration tests for missing schema configuration
+
+### Fixed
+
+- Route model binding no longer fails silently when schema is missing; instead, a 500 error with a clear message and hint is returned
+
 ## [0.1.15] - 2026-01-08
 
 ### Added

@@ -250,8 +250,13 @@ export class EffectRouteBuilder<
         }
 
         boundModelsLayer = Layer.succeed(BoundModels, result as ReadonlyMap<string, unknown>)
+      } else if (bindings.length > 0 && !bridgeConfig?.schema) {
+        // Bindings exist but no schema - provide a map that signals this for better errors
+        const unconfiguredMap = new Map<string, unknown>()
+        unconfiguredMap.set('__schema_not_configured__', true)
+        boundModelsLayer = Layer.succeed(BoundModels, unconfiguredMap as ReadonlyMap<string, unknown>)
       } else {
-        // Empty bound models for routes without bindings
+        // No bindings - empty bound models
         boundModelsLayer = Layer.succeed(BoundModels, new Map() as ReadonlyMap<string, unknown>)
       }
 

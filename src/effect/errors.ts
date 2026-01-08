@@ -47,6 +47,15 @@ export class HttpError extends Data.TaggedError('HttpError')<{
 }> {}
 
 /**
+ * Route Configuration Error - Missing or invalid route configuration
+ * These are developer errors that should be fixed in code, not runtime errors.
+ */
+export class RouteConfigurationError extends Data.TaggedError('RouteConfigurationError')<{
+  readonly message: string
+  readonly hint?: string
+}> {}
+
+/**
  * Redirect - Not an error, but uses same control flow
  * This is a tagged class (not error) for redirects
  */
@@ -64,3 +73,4 @@ export type AppError =
   | NotFoundError
   | ForbiddenError
   | HttpError
+  | RouteConfigurationError

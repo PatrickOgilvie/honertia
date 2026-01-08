@@ -13,6 +13,7 @@ import {
   NotFoundError,
   ForbiddenError,
   HttpError,
+  RouteConfigurationError,
   Redirect,
   type AppError,
 } from './errors.js'
@@ -64,6 +65,18 @@ export async function errorToResponse<E extends Env>(
 
   if (error instanceof HttpError) {
     return c.json({ message: error.message, ...(error.body as object) }, error.status as any)
+  }
+
+  if (error instanceof RouteConfigurationError) {
+    console.error(`[honertia] Route configuration error: ${error.message}`)
+    if (error.hint) {
+      console.error(`[honertia] Hint: ${error.hint}`)
+    }
+    return c.json({
+      message: error.message,
+      hint: error.hint,
+      type: 'RouteConfigurationError'
+    }, 500)
   }
 
   // Unknown error

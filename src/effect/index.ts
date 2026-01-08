@@ -30,6 +30,7 @@ export {
   NotFoundError,
   ForbiddenError,
   HttpError,
+  RouteConfigurationError,
   Redirect,
   type AppError,
 } from './errors.js'

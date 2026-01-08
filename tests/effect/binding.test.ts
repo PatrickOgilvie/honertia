@@ -672,5 +672,28 @@ describe('Route Model Binding Integration', () => {
       const invalid = await app.request('/projects/invalid-uuid')
       expect(invalid.status).toBe(404)
     })
+
+    test('bound() gives helpful ConfigurationError when schema not provided', async () => {
+      const app = new Hono()
+      app.use('*', honertia({ version: '1.0.0', render: (page) => JSON.stringify(page) }))
+      app.use('*', effectBridge())
+
+      // Route with bindings but no schema - using bound() should error helpfully
+      effectRoutes(app).get(
+        '/projects/{project}',
+        Effect.gen(function* () {
+          const project = yield* bound('project')
+          return new Response(`Project: ${project}`)
+        })
+      )
+
+      const res = await app.request('/projects/123')
+      expect(res.status).toBe(500)
+
+      const body = await res.json()
+      expect(body.type).toBe('RouteConfigurationError')
+      expect(body.message).toContain('schema configuration')
+      expect(body.hint).toContain('effectRoutes(app, { schema })')
+    })
   })
 })

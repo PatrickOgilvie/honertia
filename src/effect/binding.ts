@@ -8,6 +8,7 @@
 import { Context, Data, Effect } from 'effect'
 import type { Table } from 'drizzle-orm'
 import type { SchemaType } from './services.js'
+import { RouteConfigurationError } from './errors.js'
 
 /**
  * Error thrown when a bound model is not found in the BoundModels context.
@@ -122,14 +123,23 @@ export const bound = <K extends string>(
   key: K
 ): Effect.Effect<
   BoundModel<K>,
-  BoundModelNotFound,
+  BoundModelNotFound | RouteConfigurationError,
   BoundModels
 > =>
   Effect.gen(function* () {
     const models = yield* BoundModels
+
+    // Check if schema was not configured (sentinel value set by routing.ts)
+    if (models.has('__schema_not_configured__')) {
+      return yield* new RouteConfigurationError({
+        message: `Route model binding requires schema configuration. Cannot resolve bound('${key}') without schema.`,
+        hint: `Pass your schema to effectRoutes: effectRoutes(app, { schema })`
+      })
+    }
+
     const model = models.get(key)
     if (!model) {
-      return yield* Effect.fail(new BoundModelNotFound({ key }))
+      return yield* new BoundModelNotFound({ key })
     }
     return model as any
   })
