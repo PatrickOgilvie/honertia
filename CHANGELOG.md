@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.20] - 2026-01-09
+
+### Added
+
+- **BindingsService**: New Effect service for accessing Cloudflare bindings (KV, D1, R2, Queues, etc.) directly from actions
+  ```typescript
+  const { KV } = yield* BindingsService
+  const value = yield* Effect.tryPromise(() => KV.get('my-key'))
+  ```
+- **HonertiaBindingsType**: Module augmentation interface for typed bindings - reference the same `Bindings` type you use for Hono
+- **RequestContext.env**: Access environment bindings via `request.env` in RequestService
+- `HonertiaConfigurationError` for improved configuration error handling with hints
+
+### Changed
+
+- Simplified `setupHonertia` API - no longer requires passing a custom service type parameter just to access Cloudflare bindings
+- Improved generic types on `HonertiaFullConfig` and `HonertiaSetupConfig` for better type inference of `database` and `auth` factories
+- Rewrote "Custom Services" documentation to recommend `BindingsService` for simple binding access, reserving `effect.services` for complex scenarios (rate limiters, services needing initialization/mocking)
+- Updated "Typed Services via Module Augmentation" section showing how to define types once and use everywhere
+
 ## [0.1.19] - 2026-01-08
 
 ### Changed
