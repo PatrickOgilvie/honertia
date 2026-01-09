@@ -16,6 +16,8 @@ import {
   bound,
   BoundModels,
   BoundModelNotFound,
+  columnTypeToSchema,
+  inferParamsSchema,
 } from '../../src/effect/binding.js'
 import { registerErrorHandlers } from '../../src/setup.js'
 
@@ -701,5 +703,237 @@ describe('Route Model Binding Integration', () => {
       // In prod, message is hidden; in dev (with env var), it shows the actual error
       expect(body.props.message).toBeDefined()
     })
+  })
+})
+
+describe('columnTypeToSchema', () => {
+  // Helper to decode with the dynamically returned schema
+  const decodeWith = (schema: S.Schema.Any) =>
+    S.decodeUnknownSync(schema as S.Schema<unknown, unknown, never>)
+
+  describe('UUID types', () => {
+    test('PgUUID returns UUID schema', async () => {
+      const decode = decodeWith(columnTypeToSchema('PgUUID'))
+
+      // Valid UUID should pass
+      expect(decode('123e4567-e89b-12d3-a456-426614174000')).toBe('123e4567-e89b-12d3-a456-426614174000')
+
+      // Invalid UUID should throw
+      expect(() => decode('not-a-uuid')).toThrow()
+    })
+  })
+
+  describe('Integer types', () => {
+    test('PgInteger returns NumberFromString with int filter', async () => {
+      const decode = decodeWith(columnTypeToSchema('PgInteger'))
+
+      expect(decode('42')).toBe(42)
+      expect(decode('0')).toBe(0)
+      expect(decode('-10')).toBe(-10)
+
+      // Non-integer should throw
+      expect(() => decode('3.14')).toThrow()
+      expect(() => decode('abc')).toThrow()
+    })
+
+    test('SQLiteInteger returns NumberFromString with int filter', async () => {
+      const decode = decodeWith(columnTypeToSchema('SQLiteInteger'))
+      expect(decode('100')).toBe(100)
+    })
+
+    test('MySqlInt returns NumberFromString with int filter', async () => {
+      const decode = decodeWith(columnTypeToSchema('MySqlInt'))
+      expect(decode('999')).toBe(999)
+    })
+  })
+
+  describe('BigInt types', () => {
+    test('PgBigInt64 returns BigInt schema', async () => {
+      const decode = decodeWith(columnTypeToSchema('PgBigInt64'))
+      expect(decode('9007199254740993')).toBe(9007199254740993n)
+    })
+  })
+
+  describe('Numeric/Decimal types', () => {
+    test('PgNumeric returns NumberFromString', async () => {
+      const decode = decodeWith(columnTypeToSchema('PgNumeric'))
+
+      expect(decode('3.14159')).toBe(3.14159)
+      expect(decode('42')).toBe(42)
+    })
+
+    test('PgDoublePrecision returns NumberFromString', async () => {
+      const decode = decodeWith(columnTypeToSchema('PgDoublePrecision'))
+      expect(decode('1.23456789')).toBe(1.23456789)
+    })
+  })
+
+  describe('String types', () => {
+    test('PgText returns String schema', async () => {
+      const decode = decodeWith(columnTypeToSchema('PgText'))
+
+      expect(decode('hello world')).toBe('hello world')
+      expect(decode('')).toBe('')
+    })
+
+    test('PgVarchar returns String schema', async () => {
+      const decode = decodeWith(columnTypeToSchema('PgVarchar'))
+      expect(decode('some-slug')).toBe('some-slug')
+    })
+
+    test('SQLiteText returns String schema', async () => {
+      const decode = decodeWith(columnTypeToSchema('SQLiteText'))
+      expect(decode('sqlite text')).toBe('sqlite text')
+    })
+  })
+
+  describe('Boolean types', () => {
+    test('PgBoolean transforms string to boolean (case-insensitive)', async () => {
+      const decode = decodeWith(columnTypeToSchema('PgBoolean'))
+
+      expect(decode('true')).toBe(true)
+      expect(decode('TRUE')).toBe(true)
+      expect(decode('True')).toBe(true)
+      expect(decode('1')).toBe(true)
+      expect(decode('false')).toBe(false)
+      expect(decode('FALSE')).toBe(false)
+      expect(decode('0')).toBe(false)
+      expect(decode('anything-else')).toBe(false)
+    })
+
+    test('SQLiteBoolean transforms string to boolean', async () => {
+      const decode = decodeWith(columnTypeToSchema('SQLiteBoolean'))
+
+      expect(decode('true')).toBe(true)
+      expect(decode('1')).toBe(true)
+      expect(decode('false')).toBe(false)
+      expect(decode('0')).toBe(false)
+    })
+  })
+
+  describe('Unknown types', () => {
+    test('unknown column type returns String schema as fallback', async () => {
+      const decode = decodeWith(columnTypeToSchema('SomeUnknownType'))
+      expect(decode('anything')).toBe('anything')
+    })
+  })
+})
+
+describe('inferParamsSchema', () => {
+  // Helper to decode with the dynamically returned schema
+  const decodeWith = (schema: S.Schema.Any) =>
+    S.decodeUnknownSync(schema as S.Schema<unknown, unknown, never>)
+
+  // Mock Drizzle-like schema for testing
+  const mockSchema = {
+    projects: {
+      id: { columnType: 'PgUUID', dataType: 'string', name: 'id' },
+      slug: { columnType: 'PgVarchar', dataType: 'string', name: 'slug' },
+      position: { columnType: 'PgInteger', dataType: 'number', name: 'position' },
+    },
+    users: {
+      id: { columnType: 'PgInteger', dataType: 'number', name: 'id' },
+      email: { columnType: 'PgText', dataType: 'string', name: 'email' },
+    },
+    posts: {
+      id: { columnType: 'PgBigInt64', dataType: 'bigint', name: 'id' },
+    },
+  }
+
+  test('infers UUID schema for UUID column', () => {
+    const bindings = parseBindings('/projects/{project}')
+    const schema = inferParamsSchema(bindings, mockSchema)
+
+    expect(schema).not.toBeNull()
+
+    const decode = decodeWith(schema!)
+
+    // Valid UUID
+    expect(decode({ project: '123e4567-e89b-12d3-a456-426614174000' })).toEqual({
+      project: '123e4567-e89b-12d3-a456-426614174000',
+    })
+
+    // Invalid UUID should throw
+    expect(() => decode({ project: 'not-a-uuid' })).toThrow()
+  })
+
+  test('infers String schema for text/varchar column with custom column syntax', () => {
+    const bindings = parseBindings('/projects/{project:slug}')
+    const schema = inferParamsSchema(bindings, mockSchema)
+
+    expect(schema).not.toBeNull()
+
+    const decode = decodeWith(schema!)
+
+    // Any string should work for slug
+    expect(decode({ project: 'my-awesome-project' })).toEqual({
+      project: 'my-awesome-project',
+    })
+  })
+
+  test('infers Integer schema for integer column', () => {
+    const bindings = parseBindings('/users/{user}')
+    const schema = inferParamsSchema(bindings, mockSchema)
+
+    expect(schema).not.toBeNull()
+
+    const decode = decodeWith(schema!)
+
+    // String number should be decoded to number
+    expect(decode({ user: '42' })).toEqual({ user: 42 })
+
+    // Non-numeric should throw
+    expect(() => decode({ user: 'abc' })).toThrow()
+  })
+
+  test('infers BigInt schema for bigint column', () => {
+    const bindings = parseBindings('/posts/{post}')
+    const schema = inferParamsSchema(bindings, mockSchema)
+
+    expect(schema).not.toBeNull()
+
+    const decode = decodeWith(schema!)
+
+    expect(decode({ post: '9007199254740993' })).toEqual({ post: 9007199254740993n })
+  })
+
+  test('infers schema for multiple bindings', () => {
+    const bindings = parseBindings('/users/{user}/projects/{project}')
+    const schema = inferParamsSchema(bindings, mockSchema)
+
+    expect(schema).not.toBeNull()
+
+    const decode = decodeWith(schema!)
+
+    expect(
+      decode({
+        user: '1',
+        project: '123e4567-e89b-12d3-a456-426614174000',
+      })
+    ).toEqual({
+      user: 1,
+      project: '123e4567-e89b-12d3-a456-426614174000',
+    })
+  })
+
+  test('returns null for empty bindings', () => {
+    const bindings = parseBindings('/static/path')
+    const schema = inferParamsSchema(bindings, mockSchema)
+
+    expect(schema).toBeNull()
+  })
+
+  test('returns null when table not found in schema', () => {
+    const bindings = parseBindings('/unknown/{unknown}')
+    const schema = inferParamsSchema(bindings, mockSchema)
+
+    expect(schema).toBeNull()
+  })
+
+  test('returns null when column not found in table', () => {
+    const bindings = parseBindings('/projects/{project:nonexistent}')
+    const schema = inferParamsSchema(bindings, mockSchema)
+
+    expect(schema).toBeNull()
   })
 })

@@ -25,6 +25,7 @@ import {
   pluralize,
   findRelation,
   BoundModels,
+  inferParamsSchema,
   type ParsedBinding,
 } from './binding.js'
 
@@ -229,7 +230,17 @@ export class EffectRouteBuilder<
     const bridgeConfig = this.bridgeConfig
 
     return async (c) => {
-      const validation = await this.ensureParams(c, options?.params)
+      // Get schema from bridgeConfig or from context (set by setupHonertia/effectBridge)
+      const schema = bridgeConfig?.schema ?? getEffectSchema(c)
+
+      // Use provided params schema, or infer from database schema if available
+      const paramsSchema = options?.params ?? (
+        bindings.length > 0 && schema
+          ? inferParamsSchema(bindings, schema) ?? undefined
+          : undefined
+      )
+
+      const validation = await this.ensureParams(c, paramsSchema)
       if (validation) return validation
 
       // Build context layer from Hono context
@@ -237,9 +248,6 @@ export class EffectRouteBuilder<
 
       // Resolve route model bindings if we have any and schema is configured
       let boundModelsLayer: Layer.Layer<BoundModels, never, never>
-
-      // Get schema from bridgeConfig or from context (set by setupHonertia/effectBridge)
-      const schema = bridgeConfig?.schema ?? getEffectSchema(c)
 
       if (bindings.length > 0 && schema) {
         const db = (c as { var?: { db?: unknown } }).var?.db

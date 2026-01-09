@@ -5,10 +5,19 @@
  * Automatically resolves route parameters to database models.
  */
 
-import { Context, Data, Effect } from 'effect'
+import { Context, Data, Effect, Schema as S } from 'effect'
 import type { Table } from 'drizzle-orm'
 import type { SchemaType } from './services.js'
 import { RouteConfigurationError } from './errors.js'
+
+/**
+ * Drizzle column interface for type inference.
+ */
+interface DrizzleColumn {
+  columnType: string
+  dataType: string
+  name: string
+}
 
 /**
  * Error thrown when a bound model is not found in the BoundModels context.
@@ -263,4 +272,113 @@ function getColumnName(column: unknown): string {
     }
   }
   return ''
+}
+
+/**
+ * Map a Drizzle column type to an Effect Schema for URL param validation.
+ * URL params are always strings, so numeric types use string-to-number transforms.
+ *
+ * @param columnType - The Drizzle columnType (e.g., 'PgUUID', 'PgInteger')
+ * @returns An Effect Schema that validates the URL param string
+ */
+export function columnTypeToSchema(columnType: string): S.Schema.Any {
+  switch (columnType) {
+    // UUID types
+    case 'PgUUID':
+      return S.UUID
+
+    // Integer types - URL params are strings, so we parse to number
+    case 'PgInteger':
+    case 'PgSmallInt':
+    case 'PgBigInt53':
+    case 'PgSerial':
+    case 'PgSmallSerial':
+    case 'PgBigSerial53':
+    case 'SQLiteInteger':
+    case 'MySqlInt':
+    case 'MySqlTinyInt':
+    case 'MySqlSmallInt':
+    case 'MySqlMediumInt':
+    case 'MySqlBigInt53':
+    case 'MySqlSerial':
+      return S.NumberFromString.pipe(S.int())
+
+    // BigInt types that exceed JS number precision
+    case 'PgBigInt64':
+    case 'PgBigSerial64':
+    case 'MySqlBigInt64':
+      return S.BigInt
+
+    // Numeric/Decimal types
+    case 'PgNumeric':
+    case 'PgDoublePrecision':
+    case 'PgReal':
+    case 'MySqlFloat':
+    case 'MySqlDouble':
+    case 'MySqlDecimal':
+    case 'SQLiteReal':
+      return S.NumberFromString
+
+    // Boolean - less common in URL params but possible
+    // SQLite stores booleans as integers (0/1)
+    case 'PgBoolean':
+    case 'MySqlBoolean':
+    case 'SQLiteBoolean':
+      return S.transform(
+        S.String,
+        S.Boolean,
+        {
+          decode: (s) => s.toLowerCase() === 'true' || s === '1',
+          encode: (b) => b ? 'true' : 'false'
+        }
+      )
+
+    // String types (default for text, varchar, etc.)
+    case 'PgText':
+    case 'PgVarchar':
+    case 'PgChar':
+    case 'MySqlVarChar':
+    case 'MySqlText':
+    case 'MySqlChar':
+    case 'SQLiteText':
+    default:
+      return S.String
+  }
+}
+
+/**
+ * Infer an Effect Schema for route params based on database column types.
+ * Looks up each binding's column in the schema and builds a struct schema.
+ *
+ * @param bindings - Parsed route bindings
+ * @param schema - The Drizzle schema object
+ * @returns An Effect Schema for validating route params, or null if inference fails
+ */
+export function inferParamsSchema(
+  bindings: ParsedBinding[],
+  schema: Record<string, unknown>
+): S.Schema.Any | null {
+  if (bindings.length === 0) return null
+
+  const fields: Record<string, S.Schema.Any> = {}
+
+  for (const binding of bindings) {
+    const tableName = pluralize(binding.param)
+    const table = schema[tableName] as Record<string, unknown> | undefined
+
+    if (!table) {
+      // Table not found - can't infer, let it fail at query time
+      return null
+    }
+
+    const column = table[binding.column] as DrizzleColumn | undefined
+    if (!column || typeof column !== 'object' || !('columnType' in column)) {
+      // Column not found or not a Drizzle column - can't infer
+      return null
+    }
+
+    fields[binding.param] = columnTypeToSchema(column.columnType)
+  }
+
+  return S.Struct(fields)
 }
