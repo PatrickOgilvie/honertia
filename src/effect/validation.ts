@@ -151,13 +151,11 @@ export function formatSchemaErrors(
 
 /**
  * Nominal brand marker for validated data.
- * Private field prevents the brand from surviving object spreads.
+ * Unique symbol prevents the brand from surviving object spreads.
  */
-declare class ValidatedBrand {
-  private readonly __validatedBrand: void
-}
+export const ValidatedBrand = Symbol('ValidatedBrand')
 
-export type Validated<A> = A & ValidatedBrand
+export type Validated<A> = A & { readonly [ValidatedBrand]: true }
 
 /**
  * Mark data as validated (type-level only).
@@ -167,13 +165,11 @@ export const asValidated = <A>(input: A): Validated<A> =>
 
 /**
  * Nominal brand marker for trusted (server-derived) data.
- * Private field prevents the brand from surviving object spreads.
+ * Unique symbol prevents the brand from surviving object spreads.
  */
-declare class TrustedBrand {
-  private readonly __trustedBrand: void
-}
+export const TrustedBrand = Symbol('TrustedBrand')
 
-export type Trusted<A> = A & TrustedBrand
+export type Trusted<A> = A & { readonly [TrustedBrand]: true }
 
 /**
  * Mark data as trusted (type-level only).

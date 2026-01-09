@@ -4,7 +4,7 @@
  * Middleware that connects Hono's request handling to Effect's runtime.
  */
 
-import { Layer, ManagedRuntime } from 'effect'
+import { Effect, Layer, ManagedRuntime, Option } from 'effect'
 import { HonertiaConfigurationError } from './errors.js'
 import { ErrorCodes, type ErrorCode } from './error-catalog.js'
 import type { Context as HonoContext, MiddlewareHandler, Env } from 'hono'
@@ -24,6 +24,7 @@ import {
   type AuthType,
   type BindingsType,
 } from './services.js'
+import { TestCaptureService } from './test-layers.js'
 
 /**
  * Configuration for the Effect bridge.
@@ -79,6 +80,16 @@ const EFFECT_SCHEMA = Symbol('effectSchema')
  * @param example - An example of how to configure the service.
  * @param errorCode - The specific error code to use.
  */
+const UNCONFIGURED_SERVICE = Symbol('unconfiguredService')
+
+export function isUnconfiguredService(value: unknown): boolean {
+  try {
+    return (value as { [UNCONFIGURED_SERVICE]?: boolean })?.[UNCONFIGURED_SERVICE] === true
+  } catch {
+    return false
+  }
+}
+
 function createUnconfiguredServiceProxy(
   serviceName: string,
   configPath: string,
@@ -92,7 +103,15 @@ function createUnconfiguredServiceProxy(
     {
       get(_, prop) {
         // Allow certain properties that might be checked without meaning to "use" the service
-        if (prop === 'then' || prop === Symbol.toStringTag || prop === Symbol.iterator) {
+        if (
+          prop === UNCONFIGURED_SERVICE ||
+          prop === 'then' ||
+          prop === Symbol.toStringTag ||
+          prop === Symbol.iterator
+        ) {
+          if (prop === UNCONFIGURED_SERVICE) {
+            return true
+          }
           return undefined
         }
         throw new HonertiaConfigurationError({
@@ -279,7 +298,13 @@ export function effectBridge<E extends Env, CustomServices = never>(
   config?: EffectBridgeConfig<E, CustomServices>
 ): MiddlewareHandler<E> {
   return async (c, next) => {
-    const layer = buildContextLayer(c, config)
+    const testLayer =
+      (c as any).var?.__testLayer ?? (c.env as Record<string, unknown> | undefined)?.__testLayer
+    const hasTestLayer = Layer.isLayer(testLayer)
+    let layer = buildContextLayer(c, config)
+    if (hasTestLayer) {
+      layer = Layer.merge(layer, testLayer as Layer.Layer<any, never, never>)
+    }
     const runtime = ManagedRuntime.make(layer)
 
     // Store runtime in context
@@ -293,6 +318,22 @@ export function effectBridge<E extends Env, CustomServices = never>(
     try {
       await next()
     } finally {
+      if (hasTestLayer) {
+        try {
+          const maybeCapture = await runtime.runPromise(
+            Effect.serviceOption(TestCaptureService)
+          )
+          if (Option.isSome(maybeCapture)) {
+            const captures = await runtime.runPromise(maybeCapture.value.get())
+            const response = (c as any).res
+            if (response) {
+              ;(response as any).__testCaptured = captures
+            }
+          }
+        } catch {
+          // Ignore capture errors during tests
+        }
+      }
       // Cleanup runtime after request
       await runtime.dispose()
     }

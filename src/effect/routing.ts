@@ -4,14 +4,22 @@
  * Laravel-style routing with Effect handlers.
  */
 
-import { Effect, Exit, Layer, Schema as S } from 'effect'
+import { Effect, Exit, Layer, Option, Schema as S } from 'effect'
 import type { Context as HonoContext, Hono, MiddlewareHandler, Env } from 'hono'
-import { effectHandler } from './handler.js'
-import { buildContextLayer, getEffectSchema, type EffectBridgeConfig } from './bridge.js'
+import { effectHandler, errorToResponse } from './handler.js'
+import {
+  buildContextLayer,
+  getEffectRuntime,
+  getEffectSchema,
+  isUnconfiguredService,
+  type EffectBridgeConfig,
+} from './bridge.js'
 import {
   type AppError,
   Redirect,
+  ValidationError,
 } from './errors.js'
+import { ErrorCodes } from './error-catalog.js'
 import {
   DatabaseService,
   AuthService,
@@ -19,6 +27,8 @@ import {
   RequestService,
   ResponseFactoryService,
 } from './services.js'
+import { ValidatedBodyService, ValidatedQueryService } from './validated-services.js'
+import { validate } from './validation.js'
 import {
   parseBindings,
   toHonoPath,
@@ -28,6 +38,12 @@ import {
   inferParamsSchema,
   type ParsedBinding,
 } from './binding.js'
+import {
+  RouteRegistry,
+  getGlobalRegistry,
+  type HttpMethod,
+  type RouteMetadata,
+} from './route-registry.js'
 
 /**
  * Type for Effect-based route handlers.
@@ -49,6 +65,8 @@ export type BaseServices =
   | DatabaseService
   | AuthService
   | BoundModels
+  | ValidatedBodyService
+  | ValidatedQueryService
 
 /**
  * Route-level configuration options.
@@ -68,6 +86,75 @@ export interface EffectRouteOptions {
    * ```
    */
   params?: S.Schema.Any
+  /**
+   * Named route for reverse routing and test helpers.
+   *
+   * @example
+   * ```typescript
+   * effectRoutes(app).get(
+   *   '/projects/{project}',
+   *   showProject,
+   *   { name: 'projects.show' }
+   * )
+   * ```
+   */
+  name?: string
+  /**
+   * Validate request body with the provided schema.
+   * Automatically returns a 422 ValidationError on failure.
+   */
+  body?: S.Schema.Any
+  /**
+   * Validate query params with the provided schema.
+   * Automatically returns a 422 ValidationError on failure.
+   */
+  query?: S.Schema.Any
+  /**
+   * Response schema used for type safety and OpenAPI generation.
+   * Runtime validation is opt-in via validateResponse.
+   */
+  response?: S.Schema.Any
+  /**
+   * Enable/disable automatic body validation.
+   * Defaults to true when a body schema is provided.
+   */
+  validateBody?: boolean
+  /**
+   * Enable/disable runtime response validation.
+   * Defaults to false.
+   */
+  validateResponse?: boolean
+}
+
+const BODYLESS_METHODS = new Set(['GET', 'HEAD'])
+
+async function parseRequestBody<E extends Env>(
+  c: HonoContext<E>
+): Promise<unknown> {
+  const contentType = c.req.header('Content-Type') ?? ''
+  const isJson = contentType.includes('application/json')
+
+  try {
+    if (isJson) {
+      return await c.req.json<unknown>()
+    }
+    return await c.req.parseBody()
+  } catch {
+    throw new ValidationError({
+      errors: { form: isJson ? 'Invalid JSON body' : 'Could not parse request body' },
+      code: ErrorCodes.VAL_003_BODY_PARSE_FAILED,
+    })
+  }
+}
+
+async function hydrateRequestDb<E extends Env>(c: HonoContext<E>): Promise<void> {
+  const runtime = getEffectRuntime(c)
+  if (!runtime) return
+
+  const maybeDb = await runtime.runPromise(Effect.serviceOption(DatabaseService))
+  if (Option.isSome(maybeDb) && !isUnconfiguredService(maybeDb.value)) {
+    c.set('db' as any, maybeDb.value)
+  }
 }
 
 /**
@@ -82,7 +169,8 @@ export class EffectRouteBuilder<
     private readonly app: Hono<E>,
     private readonly layers: Layer.Layer<any, never, never>[] = [],
     private readonly pathPrefix: string = '',
-    private readonly bridgeConfig?: EffectBridgeConfig<E, CustomServices>
+    private readonly bridgeConfig?: EffectBridgeConfig<E, CustomServices>,
+    private readonly registry: RouteRegistry = getGlobalRegistry()
   ) {}
 
   /**
@@ -96,7 +184,8 @@ export class EffectRouteBuilder<
       this.app,
       [...this.layers, layer as Layer.Layer<S, never, never>],
       this.pathPrefix,
-      this.bridgeConfig
+      this.bridgeConfig,
+      this.registry
     )
   }
 
@@ -109,7 +198,8 @@ export class EffectRouteBuilder<
       this.app,
       this.layers,
       this.pathPrefix + normalizedPath,
-      this.bridgeConfig
+      this.bridgeConfig,
+      this.registry
     )
   }
 
@@ -243,6 +333,40 @@ export class EffectRouteBuilder<
       const validation = await this.ensureParams(c, paramsSchema)
       if (validation) return validation
 
+      const bodySchema = options?.body
+      const querySchema = options?.query
+      const shouldValidateBody = bodySchema !== undefined && (options?.validateBody ?? true)
+
+      let validatedBody: unknown
+      let validatedQuery: unknown
+      let hasValidatedBody = false
+      let hasValidatedQuery = false
+
+      try {
+        if (shouldValidateBody && !BODYLESS_METHODS.has(c.req.method.toUpperCase())) {
+          const body = await parseRequestBody(c)
+          validatedBody = await Effect.runPromise(
+            validate(bodySchema as S.Schema.AnyNoContext, body)
+          )
+          hasValidatedBody = true
+        }
+
+        if (querySchema) {
+          const query = c.req.query()
+          validatedQuery = await Effect.runPromise(
+            validate(querySchema as S.Schema.AnyNoContext, query)
+          )
+          hasValidatedQuery = true
+        }
+      } catch (error) {
+        if (error instanceof ValidationError) {
+          return await errorToResponse(error, c)
+        }
+        throw error
+      }
+
+      await hydrateRequestDb(c)
+
       // Build context layer from Hono context
       const contextLayer = buildContextLayer(c, bridgeConfig)
 
@@ -273,6 +397,18 @@ export class EffectRouteBuilder<
 
       // Combine with provided layers
       let fullLayer: Layer.Layer<any, never, never> = Layer.merge(contextLayer, boundModelsLayer)
+      if (hasValidatedBody) {
+        fullLayer = Layer.merge(
+          fullLayer,
+          Layer.succeed(ValidatedBodyService, validatedBody as any)
+        )
+      }
+      if (hasValidatedQuery) {
+        fullLayer = Layer.merge(
+          fullLayer,
+          Layer.succeed(ValidatedQueryService, validatedQuery as any)
+        )
+      }
       for (const layer of layers) {
         fullLayer = Layer.merge(fullLayer, layer)
       }
@@ -290,14 +426,33 @@ export class EffectRouteBuilder<
    * Parses Laravel-style bindings and converts to Hono path format.
    */
   private registerRoute<R extends BaseServices | ProvidedServices | CustomServices>(
-    method: 'get' | 'post' | 'put' | 'patch' | 'delete' | 'all',
+    method: HttpMethod,
     path: string,
     effect: EffectHandler<R, AppError | Error>,
     options?: EffectRouteOptions
   ): void {
     const bindings = parseBindings(path)
     const honoPath = toHonoPath(path)
-    this.app[method](this.resolvePath(honoPath), this.createHandler(effect, bindings, options))
+    const fullPath = this.resolvePath(honoPath)
+
+    // Register route metadata
+    const metadata: RouteMetadata = {
+      method,
+      path,
+      honoPath,
+      fullPath,
+      bindings,
+      paramsSchema: options?.params,
+      bodySchema: options?.body,
+      querySchema: options?.query,
+      responseSchema: options?.response,
+      prefix: this.pathPrefix,
+      name: options?.name,
+    }
+    this.registry.register(metadata)
+
+    // Register with Hono
+    this.app[method](fullPath, this.createHandler(effect, bindings, options))
   }
 
   /** Register a GET route. Supports Laravel-style route model binding: /projects/{project} */
@@ -353,6 +508,32 @@ export class EffectRouteBuilder<
   ): void {
     this.registerRoute('all', path, effect, options)
   }
+
+  /**
+   * Get the route registry for this builder.
+   * Useful for introspection, CLI tooling, and testing.
+   */
+  getRegistry(): RouteRegistry {
+    return this.registry
+  }
+}
+
+/**
+ * Configuration for effectRoutes().
+ */
+export interface EffectRoutesConfig<E extends Env, CustomServices = never>
+  extends EffectBridgeConfig<E, CustomServices> {
+  /**
+   * Route registry for storing route metadata.
+   * Defaults to the global registry.
+   *
+   * @example
+   * ```typescript
+   * const registry = new RouteRegistry()
+   * effectRoutes(app, { registry })
+   * ```
+   */
+  registry?: RouteRegistry
 }
 
 /**
@@ -370,7 +551,8 @@ export class EffectRouteBuilder<
  */
 export function effectRoutes<E extends Env, CustomServices = never>(
   app: Hono<E>,
-  config?: EffectBridgeConfig<E, CustomServices>
+  config?: EffectRoutesConfig<E, CustomServices>
 ): EffectRouteBuilder<E, never, CustomServices> {
-  return new EffectRouteBuilder(app, [], '', config)
+  const registry = config?.registry ?? getGlobalRegistry()
+  return new EffectRouteBuilder(app, [], '', config, registry)
 }

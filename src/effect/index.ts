@@ -9,11 +9,13 @@ export {
   DatabaseService,
   AuthService,
   AuthUserService,
+  EmailService,
   HonertiaService,
   RequestService,
   ResponseFactoryService,
   BindingsService,
   type AuthUser,
+  type EmailClient,
   type HonertiaRenderer,
   type RequestContext,
   type ResponseFactory,
@@ -126,6 +128,14 @@ export {
   type FormattedSchemaErrors,
 } from './validation.js'
 
+// Validated Request Services
+export {
+  ValidatedBodyService,
+  ValidatedQueryService,
+  validatedBody,
+  validatedQuery,
+} from './validated-services.js'
+
 // Bridge
 export {
   effectBridge,
@@ -175,7 +185,41 @@ export {
   type EffectHandler,
   type BaseServices,
   type EffectRouteOptions,
+  type EffectRoutesConfig,
 } from './routing.js'
+
+// Route Registry
+export {
+  RouteRegistry,
+  getGlobalRegistry,
+  resetGlobalRegistry,
+  type HttpMethod,
+  type RouteMetadata,
+  type RouteMetadataJson,
+  type FindRouteOptions,
+} from './route-registry.js'
+
+// Testing Utilities
+export {
+  describeRoute,
+  createRouteTester,
+  generateTestCases,
+  type TestUserType,
+  type TestUser,
+  type TestRequestOptions,
+  type TestExpectation,
+  type TestContext,
+  type TestCaseOptions,
+  type TestFn,
+  type TestAppConfig,
+} from './testing.js'
+
+// Test Layers
+export {
+  TestLayer,
+  TestCaptureService,
+  type TestCaptures,
+} from './test-layers.js'
 
 // Route Model Binding
 export {

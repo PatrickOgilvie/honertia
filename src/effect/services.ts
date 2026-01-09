@@ -4,7 +4,7 @@
  * Service tags for dependency injection via Effect.
  */
 
-import { Context } from 'effect'
+import { Context, type Effect } from 'effect'
 
 /**
  * Augmentable interface for database type.
@@ -183,6 +183,18 @@ export interface AuthUser {
 export class AuthUserService extends Context.Tag('honertia/AuthUser')<
   AuthUserService,
   AuthUser
+>() {}
+
+/**
+ * Email Service - Outbound email delivery
+ */
+export interface EmailClient {
+  send: (to: string, subject: string, body: string) => Effect.Effect<void, Error>
+}
+
+export class EmailService extends Context.Tag('honertia/Email')<
+  EmailService,
+  EmailClient
 >() {}
 
 /**
