@@ -12,15 +12,18 @@ export {
   HonertiaService,
   RequestService,
   ResponseFactoryService,
+  BindingsService,
   type AuthUser,
   type HonertiaRenderer,
   type RequestContext,
   type ResponseFactory,
   type HonertiaDatabaseType,
   type HonertiaAuthType,
+  type HonertiaBindingsType,
   type DatabaseType,
   type SchemaType,
   type AuthType,
+  type BindingsType,
 } from './services.js'
 
 // Errors
@@ -31,6 +34,7 @@ export {
   ForbiddenError,
   HttpError,
   RouteConfigurationError,
+  HonertiaConfigurationError,
   Redirect,
   type AppError,
 } from './errors.js'

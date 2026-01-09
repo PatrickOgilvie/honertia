@@ -77,6 +77,39 @@ interface AuthNotConfigured {
 export type AuthType = HonertiaAuthType extends { type: infer T } ? T : AuthNotConfigured
 
 /**
+ * Augmentable interface for environment bindings type.
+ * Users can extend this via module augmentation:
+ *
+ * @example
+ * ```typescript
+ * declare module 'honertia/effect' {
+ *   interface HonertiaBindingsType {
+ *     type: {
+ *       DB: D1Database
+ *       KV: KVNamespace
+ *       ANALYTICS: AnalyticsEngineDataset
+ *     }
+ *   }
+ * }
+ * ```
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface HonertiaBindingsType {}
+
+/**
+ * Error type shown when HonertiaBindingsType.type is not configured.
+ */
+interface BindingsNotConfigured {
+  readonly __error: 'BindingsService type not configured. Add module augmentation: declare module "honertia/effect" { interface HonertiaBindingsType { type: YourBindingsType } }'
+  readonly __hint: 'This is optional - BindingsService will still work but be typed as Record<string, unknown>'
+}
+
+/** Extract bindings type from augmented interface, defaults to Record<string, unknown> if not configured */
+export type BindingsType = HonertiaBindingsType extends { type: infer T }
+  ? T
+  : Record<string, unknown>
+
+/**
  * Database Service - Generic database client
  */
 const DatabaseService_base: Context.TagClass<
@@ -97,6 +130,32 @@ const AuthService_base: Context.TagClass<
 > = Context.Tag('honertia/Auth')<AuthService, AuthType>()
 
 export class AuthService extends AuthService_base {}
+
+/**
+ * Bindings Service - Environment bindings (Cloudflare D1, KV, R2, etc.)
+ *
+ * Automatically provided by setupHonertia. Use module augmentation for type safety:
+ *
+ * @example
+ * ```typescript
+ * // In your types.d.ts
+ * declare module 'honertia/effect' {
+ *   interface HonertiaBindingsType {
+ *     type: { DB: D1Database; KV: KVNamespace }
+ *   }
+ * }
+ *
+ * // In your action
+ * const { KV, DB } = yield* BindingsService
+ * ```
+ */
+const BindingsService_base: Context.TagClass<
+  BindingsService,
+  'honertia/Bindings',
+  BindingsType
+> = Context.Tag('honertia/Bindings')<BindingsService, BindingsType>()
+
+export class BindingsService extends BindingsService_base {}
 
 /**
  * Authenticated User - Session with user data
@@ -144,12 +203,22 @@ export class HonertiaService extends Context.Tag('honertia/Honertia')<
 >() {}
 
 /**
- * Request Context - HTTP request data
+ * Request Context - HTTP request data and environment bindings
  */
-export interface RequestContext {
+export interface RequestContext<Bindings = Record<string, unknown>> {
   readonly method: string
   readonly url: string
   readonly headers: Headers
+  /**
+   * Environment bindings (Cloudflare D1, KV, R2, etc.)
+   * Access via: `request.env.DB`, `request.env.KV`, etc.
+   *
+   * For full type safety, cast to your Bindings type:
+   * ```typescript
+   * const { DB, KV } = request.env as Bindings
+   * ```
+   */
+  readonly env: Bindings
   param(name: string): string | undefined
   params(): Record<string, string>
   query(): Record<string, string>

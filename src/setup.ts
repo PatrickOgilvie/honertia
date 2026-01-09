@@ -14,8 +14,13 @@ import { effectBridge, type EffectBridgeConfig } from './effect/bridge.js'
 
 /**
  * Extended Honertia configuration with database, auth, and schema.
+ *
+ * @typeParam E - Hono environment type
+ * @typeParam DB - Database client type (inferred from database factory return type)
+ * @typeParam Auth - Auth client type (inferred from auth factory return type)
  */
-export interface HonertiaFullConfig<E extends Env = Env> extends HonertiaConfig {
+export interface HonertiaFullConfig<E extends Env = Env, DB = unknown, Auth = unknown>
+  extends HonertiaConfig {
   /**
    * Database factory function.
    * Creates the database client for each request.
@@ -25,7 +30,7 @@ export interface HonertiaFullConfig<E extends Env = Env> extends HonertiaConfig 
    * database: (c) => createDb(c.env.DATABASE_URL)
    * ```
    */
-  database?: (c: Context<E>) => unknown
+  database?: (c: Context<E>) => DB
 
   /**
    * Auth factory function.
@@ -41,7 +46,7 @@ export interface HonertiaFullConfig<E extends Env = Env> extends HonertiaConfig 
    * })
    * ```
    */
-  auth?: (c: Context<E>) => unknown
+  auth?: (c: Context<E & { Variables: { db: DB } }>) => Auth
 
   /**
    * Drizzle schema for route model binding.
@@ -61,12 +66,22 @@ export interface HonertiaFullConfig<E extends Env = Env> extends HonertiaConfig 
 
 /**
  * Configuration for Honertia setup.
+ *
+ * @typeParam E - Hono environment type
+ * @typeParam DB - Database client type (inferred from database factory)
+ * @typeParam Auth - Auth client type (inferred from auth factory)
+ * @typeParam CustomServices - Custom Effect services
  */
-export interface HonertiaSetupConfig<E extends Env = Env, CustomServices = never> {
+export interface HonertiaSetupConfig<
+  E extends Env = Env,
+  DB = unknown,
+  Auth = unknown,
+  CustomServices = never,
+> {
   /**
    * Honertia core configuration including database, auth, and schema.
    */
-  honertia: HonertiaFullConfig<E>
+  honertia: HonertiaFullConfig<E, DB, Auth>
 
   /**
    * Effect bridge configuration (optional).
@@ -120,9 +135,12 @@ export interface HonertiaSetupConfig<E extends Env = Env, CustomServices = never
  * }))
  * ```
  */
-export function setupHonertia<E extends Env, CustomServices = never>(
-  config: HonertiaSetupConfig<E, CustomServices>
-): MiddlewareHandler<E> {
+export function setupHonertia<
+  E extends Env,
+  DB = unknown,
+  Auth = unknown,
+  CustomServices = never,
+>(config: HonertiaSetupConfig<E, DB, Auth, CustomServices>): MiddlewareHandler<E> {
   const { database, auth, schema, ...honertiaConfig } = config.honertia
 
   // Middleware to set up db and auth on c.var
@@ -132,9 +150,10 @@ export function setupHonertia<E extends Env, CustomServices = never>(
       c.set('db' as any, database(c))
     }
 
-    // Set up auth (can access c.var.db)
+    // Set up auth (can access c.var.db since database middleware ran first)
     if (auth) {
-      c.set('auth' as any, auth(c))
+      // Cast c to include db in Variables since we just set it above
+      c.set('auth' as any, auth(c as Context<E & { Variables: { db: DB } }>))
     }
 
     await next()

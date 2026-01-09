@@ -14,12 +14,14 @@ import {
   HonertiaService,
   RequestService,
   ResponseFactoryService,
+  BindingsService,
   type AuthUser,
   type RequestContext,
   type ResponseFactory,
   type HonertiaRenderer,
   type DatabaseType,
   type AuthType,
+  type BindingsType,
 } from './services.js'
 
 /**
@@ -121,6 +123,7 @@ function createRequestContext<E extends Env>(c: HonoContext<E>): RequestContext 
     method: c.req.method,
     url: c.req.url,
     headers: c.req.raw.headers,
+    env: (c.env ?? {}) as Record<string, unknown>,
     param: (name: string) => c.req.param(name),
     params: () => {
       const params = c.req.param()
@@ -177,6 +180,7 @@ export function buildContextLayer<E extends Env, CustomServices = never>(
   | DatabaseService
   | AuthService
   | AuthUserService
+  | BindingsService
   | CustomServices,
   never,
   never
@@ -184,6 +188,12 @@ export function buildContextLayer<E extends Env, CustomServices = never>(
   const requestLayer = Layer.succeed(RequestService, createRequestContext(c))
   const responseLayer = Layer.succeed(ResponseFactoryService, createResponseFactory(c))
   const honertiaLayer = Layer.succeed(HonertiaService, createHonertiaRenderer(c))
+
+  // Bindings layer - always available, typed via module augmentation
+  const bindingsLayer = Layer.succeed(
+    BindingsService,
+    (c.env ?? {}) as BindingsType
+  )
 
   // Database layer - provide helpful error proxy if not configured
   const db = (c as any).var?.db
@@ -213,6 +223,7 @@ export function buildContextLayer<E extends Env, CustomServices = never>(
     requestLayer,
     responseLayer,
     honertiaLayer,
+    bindingsLayer,
     databaseLayer,
     authLayer
   )
@@ -231,6 +242,7 @@ export function buildContextLayer<E extends Env, CustomServices = never>(
     | RequestService
     | ResponseFactoryService
     | HonertiaService
+    | BindingsService
     | DatabaseService
     | AuthService
     | AuthUserService

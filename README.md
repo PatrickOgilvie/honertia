@@ -66,12 +66,12 @@ Deploy the honertia-worker-demo repo to Cloudflare
 import { Hono } from 'hono'
 import { logger } from 'hono/logger'
 import { setupHonertia, createTemplate, createVersion, registerErrorHandlers, vite } from 'honertia'
-import { Context, Layer } from 'effect'
 import manifest from '../dist/manifest.json'
 
 import type { Env } from './types'
 import { createDb } from './db/db'
 import { createAuth } from './lib/auth'
+import * as schema from './db/schema'
 import { registerRoutes } from './routes'
 
 const app = new Hono<Env>()
@@ -79,13 +79,8 @@ const assetVersion = createVersion(manifest)
 const entry = manifest['src/main.tsx']
 const assetPath = (path: string) => `/${path}`
 
-class BindingsService extends Context.Tag('app/Bindings')<
-  BindingsService,
-  { KV: KVNamespace }
->() {}
-
 // Honertia bundles db/auth setup + core middleware + Effect runtime.
-app.use('*', setupHonertia<Env, BindingsService>({
+app.use('*', setupHonertia<Env>({
   honertia: {
     // Use your asset manifest hash so Inertia reloads on deploy.
     version: assetVersion,
@@ -108,12 +103,6 @@ app.use('*', setupHonertia<Env, BindingsService>({
     }),
     // Schema for route model binding (optional)
     schema,
-  },
-  effect: {
-    // Custom Effect services (e.g., Cloudflare bindings)
-    services: (c) => Layer.succeed(BindingsService, {
-      KV: c.env.MY_KV,
-    }),
   },
   // Optional: extra Hono middleware in the same chain.
   middleware: [
@@ -780,94 +769,109 @@ Honertia provides these services via Effect's dependency injection:
 | `DatabaseService` | Database client (from `c.var.db`) |
 | `AuthService` | Auth instance (from `c.var.auth`) |
 | `AuthUserService` | Authenticated user session |
+| `BindingsService` | Environment bindings (Cloudflare KV, D1, R2, etc.) |
 | `HonertiaService` | Page renderer |
 | `RequestService` | Request context (params, query, body) |
 | `ResponseFactoryService` | Response builders |
 
-#### Custom Services
+#### Accessing Cloudflare Bindings
 
-You can inject Cloudflare Worker bindings (KV, D1, Queues, Analytics Engine) as services using the `services` option in `setupHonertia`, `effectBridge`, or `effectRoutes`.
-
-Choose the option that matches your setup:
-
-- `setupHonertia`: recommended for most apps; keeps config in one place and applies services to every Effect handler.
-- `effectBridge`: use when wiring middleware manually or when you need precise middleware ordering; applies services to all Effect handlers.
-- `effectRoutes`: use when you want services scoped to a route group or different services per group.
+Use `BindingsService` to access your Cloudflare bindings (KV, D1, R2, Queues, etc.):
 
 ```typescript
-import { Effect, Layer, Context } from 'effect'
-import { setupHonertia, effectBridge, effectRoutes } from 'honertia'
+import { Effect } from 'effect'
+import { BindingsService, json } from 'honertia/effect'
 
-// Define your custom service
-export class BindingsService extends Context.Tag('app/Bindings')<
-  BindingsService,
-  {
-    KV: KVNamespace
-    ANALYTICS: AnalyticsEngineDataset
-    DB: D1Database
-  }
->() {}
-
-// Option 1: setupHonertia (global services via the one-liner setup)
-app.use('*', setupHonertia<Env, BindingsService>({
-  honertia: {
-    version: '1.0.0',
-    render: (page) => JSON.stringify(page),
-  },
-  effect: {
-    services: (c) => Layer.succeed(BindingsService, {
-      KV: c.env.MY_KV,
-      ANALYTICS: c.env.ANALYTICS,
-      DB: c.env.DB,
-    }),
-  },
-}))
-
-// Option 2: effectBridge (manual middleware wiring)
-app.use('*', effectBridge<Env, BindingsService>({
-  database: (c) => createDb(c.env.DATABASE_URL),
-  services: (c) => Layer.succeed(BindingsService, {
-    KV: c.env.MY_KV,
-    ANALYTICS: c.env.ANALYTICS,
-    DB: c.env.DB,
-  }),
-}))
-
-// Option 3: effectRoutes (scoped to a route group)
-effectRoutes<Env, BindingsService>(app, {
-  services: (c) => Layer.succeed(BindingsService, {
-    KV: c.env.MY_KV,
-    ANALYTICS: c.env.ANALYTICS,
-    DB: c.env.DB,
-  }),
-}).group((route) => {
-  route.get('/data', getDataFromKV)
-})
-
-// Use the custom service in your actions
 const getDataFromKV = Effect.gen(function* () {
-  const bindings = yield* BindingsService
-  const value = yield* Effect.tryPromise(() =>
-    bindings.KV.get('my-key')
-  )
+  const { KV } = yield* BindingsService
+  const value = yield* Effect.tryPromise(() => KV.get('my-key'))
   return yield* json({ value })
 })
 ```
 
-You can provide multiple bindings in any option using `Layer.mergeAll` (for example, a `QueueService` tag for a queue binding):
+For full type safety, add `HonertiaBindingsType` to your module augmentation (see [TypeScript](#typescript) section). You can reference the same `Bindings` type you use for Hono—no duplication needed.
+
+#### Custom Effect Services
+
+For more complex scenarios, use `effect.services` to create proper Effect services:
+
+**When to use custom services instead of `request.env`:**
+- Services that need initialization or cleanup logic
+- Services you want to mock in tests
+- Abstracting third-party APIs into a typed interface
+- Services that combine multiple bindings with business logic
 
 ```typescript
-app.use('*', effectBridge<Env, BindingsService | QueueService>({
-  services: (c) => Layer.mergeAll(
-    Layer.succeed(BindingsService, {
-      KV: c.env.MY_KV,
-      ANALYTICS: c.env.ANALYTICS,
-      DB: c.env.DB,
-    }),
-    Layer.succeed(QueueService, c.env.MY_QUEUE),
-  ),
+import { Effect, Layer, Context } from 'effect'
+import { setupHonertia } from 'honertia'
+
+// Example: A rate limiter service that combines KV with business logic
+class RateLimiterService extends Context.Tag('app/RateLimiter')<
+  RateLimiterService,
+  {
+    check: (key: string, limit: number, windowSeconds: number) => Promise<boolean>
+    increment: (key: string) => Promise<void>
+  }
+>() {}
+
+// Create the service with initialization logic
+const createRateLimiter = (kv: KVNamespace) => ({
+  check: async (key: string, limit: number, windowSeconds: number) => {
+    const count = parseInt(await kv.get(key) ?? '0')
+    return count < limit
+  },
+  increment: async (key: string) => {
+    const count = parseInt(await kv.get(key) ?? '0')
+    await kv.put(key, String(count + 1), { expirationTtl: 60 })
+  },
+})
+
+app.use('*', setupHonertia<Env, RateLimiterService>({
+  honertia: { version, render },
+  effect: {
+    services: (c) => Layer.succeed(
+      RateLimiterService,
+      createRateLimiter(c.env.RATE_LIMIT_KV)
+    ),
+  },
+}))
+
+// Use in your action - clean, testable, typed
+const createProject = Effect.gen(function* () {
+  const rateLimiter = yield* RateLimiterService
+  const auth = yield* authorize()
+
+  const allowed = yield* Effect.tryPromise(() =>
+    rateLimiter.check(`create:${auth.user.id}`, 10, 60)
+  )
+  if (!allowed) {
+    return yield* httpError(429, 'Rate limit exceeded')
+  }
+
+  // ... create project ...
+
+  yield* Effect.tryPromise(() => rateLimiter.increment(`create:${auth.user.id}`))
+  return yield* redirect('/projects')
+})
+```
+
+**Multiple services with `Layer.mergeAll`:**
+
+```typescript
+app.use('*', setupHonertia<Env, RateLimiterService | QueueService>({
+  honertia: { version, render },
+  effect: {
+    services: (c) => Layer.mergeAll(
+      Layer.succeed(RateLimiterService, createRateLimiter(c.env.RATE_LIMIT_KV)),
+      Layer.succeed(QueueService, { queue: c.env.MY_QUEUE }),
+    ),
+  },
 }))
 ```
+
+**Summary:**
+- **Simple binding access**: Use `BindingsService` (automatically provided, typed via module augmentation)
+- **Complex services**: Use `effect.services` when you need initialization, testability, or abstraction
 
 ### Routing
 
@@ -1717,38 +1721,82 @@ const Layout: HonertiaPage<Props> = ({ auth, children }) => {
 
 ### Typed Services via Module Augmentation
 
-By default, `DatabaseService` and `AuthService` are typed as `unknown` since Honertia is database and auth agnostic. You can provide your specific types via module augmentation:
+Define your types once in `types.ts` and use them for both Hono and Effect services:
 
 ```typescript
-// src/types.d.ts (or any .d.ts file in your project)
+// src/types.ts
+import type { D1Database } from '@cloudflare/workers-types'
 import type { Database } from '~/db/db'
-import type { auth } from '~/lib/auth'
+import type { Auth } from '~/lib/auth'
 import * as schema from '~/db/schema'
 
+// Define bindings ONCE
+export type Bindings = {
+  DB: D1Database
+  BETTER_AUTH_SECRET: string
+  ENVIRONMENT?: string
+}
+
+export type Variables = {
+  db: Database
+  auth: Auth
+}
+
+// Export for Hono
+export type Env = {
+  Bindings: Bindings
+  Variables: Variables
+}
+
+// Module augmentation references the same types
 declare module 'honertia/effect' {
   interface HonertiaDatabaseType {
-    type: Database        // Your Drizzle/Prisma/Kysely type
-    schema: typeof schema // Your Drizzle schema (for route model binding)
+    type: Database
+    schema: typeof schema
   }
 
   interface HonertiaAuthType {
-    type: typeof auth // Your better-auth instance type
+    type: Auth
   }
+
+  interface HonertiaBindingsType {
+    type: Bindings
 }
 ```
 
-Then use `DatabaseService` and `AuthService` to get typed access:
+Now use the `Env` type for Hono and get full type safety everywhere:
 
 ```typescript
-import { DatabaseService, AuthService } from 'honertia/effect'
+// src/index.ts
+import type { Env } from './types'
 
-// DatabaseService respects your module augmentation
-const db = yield* DatabaseService
-const auth = yield* AuthService
+const app = new Hono<Env>()
+
+app.use('*', setupHonertia<Env>({
+  honertia: {
+    database: (c) => createDb(c.env.DB),  // ✅ c.env.DB is typed
+    auth: (c) => createAuth({
+      db: c.var.db,                        // ✅ c.var.db is typed
+      secret: c.env.BETTER_AUTH_SECRET,
+    }),
+    // ...
+  },
+}))
+```
+
+```typescript
+// In your actions
+import { DatabaseService, BindingsService } from 'honertia/effect'
+
+const db = yield* DatabaseService          // ✅ typed as Database
+const { DB } = yield* BindingsService      // ✅ typed as Bindings
+
 const projects = yield* Effect.tryPromise(() =>
-  db.query.projects.findMany() // ✅ Full type safety
+  db.query.projects.findMany()             // ✅ full type safety
 )
 ```
+
+One type definition, used everywhere—no duplication.
 
 ## Architecture Notes
 
