@@ -7,6 +7,8 @@
 import { Effect, Schema as S, ParseResult } from 'effect'
 import { RequestService } from './services.js'
 import { ValidationError } from './errors.js'
+import type { FieldError } from './error-types.js'
+import { ErrorCodes } from './error-catalog.js'
 
 /**
  * Extract validation data from the request.
@@ -36,6 +38,7 @@ export const getValidationData: Effect.Effect<
     Effect.mapError(() =>
       new ValidationError({
         errors: { form: isJson ? 'Invalid JSON body' : 'Could not parse request body' },
+        code: ErrorCodes.VAL_003_BODY_PARSE_FAILED,
       })
     )
   )
@@ -44,7 +47,85 @@ export const getValidationData: Effect.Effect<
 })
 
 /**
+ * Result of formatting schema errors with details.
+ */
+export interface FormattedSchemaErrors {
+  /** Simple field -> message mapping */
+  errors: Record<string, string>
+  /** Detailed field errors for structured output */
+  details: Record<string, FieldError>
+}
+
+/**
  * Format Effect Schema parse errors into field-level validation errors.
+ * Returns both simple errors and detailed field information.
+ */
+export function formatSchemaErrorsWithDetails(
+  error: ParseResult.ParseError,
+  data: unknown,
+  messages: Record<string, string> = {},
+  attributes: Record<string, string> = {}
+): FormattedSchemaErrors {
+  const errors: Record<string, string> = {}
+  const details: Record<string, FieldError> = {}
+  const issues = ParseResult.ArrayFormatter.formatErrorSync(error)
+
+  // Get the input data for extracting actual values
+  const inputData = (typeof data === 'object' && data !== null) ? data as Record<string, unknown> : {}
+
+  for (const issue of issues) {
+    const field = issue.path.length > 0 ? issue.path.map(String).join('.') : 'form'
+
+    if (errors[field]) continue // First error wins
+
+    const attribute = attributes[field] ?? field
+    const message = messages[field] ?? issue.message
+
+    errors[field] = message.replace(/:attribute/g, attribute)
+
+    // Extract the actual value from the input data
+    let value: unknown = inputData
+    for (const segment of issue.path) {
+      if (typeof value === 'object' && value !== null) {
+        value = (value as Record<string | number, unknown>)[segment as string | number]
+      } else {
+        value = undefined
+        break
+      }
+    }
+
+    // Create detailed field error
+    details[field] = {
+      value,
+      expected: issue.message,
+      message: errors[field],
+      path: issue.path.map(String),
+      schemaType: extractSchemaType(issue),
+    }
+  }
+
+  return { errors, details }
+}
+
+/**
+ * Extract the schema type from an issue for debugging.
+ */
+function extractSchemaType(issue: ParseResult.ArrayFormatterIssue): string | undefined {
+  // Try to extract type information from the issue
+  const message = issue.message
+
+  // Common patterns in Effect Schema messages
+  if (message.includes('Expected')) {
+    const match = message.match(/Expected\s+([^,]+)/)
+    if (match) return match[1].trim()
+  }
+
+  return undefined
+}
+
+/**
+ * Format Effect Schema parse errors into field-level validation errors.
+ * Simple version that returns only the error messages.
  */
 export function formatSchemaErrors(
   error: ParseResult.ParseError,
@@ -145,12 +226,29 @@ export function validate<A, I>(
   options: ValidateOptions = {}
 ): Effect.Effect<Validated<A>, ValidationError, never> {
   return S.decodeUnknown(schema)(data).pipe(
-    Effect.mapError((error) =>
-      new ValidationError({
-        errors: formatSchemaErrors(error, options.messages, options.attributes),
+    Effect.mapError((error) => {
+      const { errors, details } = formatSchemaErrorsWithDetails(
+        error,
+        data,
+        options.messages,
+        options.attributes
+      )
+
+      // Determine the most appropriate error code
+      const hasRequiredErrors = Object.values(details).some(
+        d => d.expected?.toLowerCase().includes('required') ||
+             d.message?.toLowerCase().includes('required')
+      )
+
+      return new ValidationError({
+        errors,
+        fieldDetails: details,
         component: options.errorComponent,
+        code: hasRequiredErrors
+          ? ErrorCodes.VAL_001_FIELD_REQUIRED
+          : ErrorCodes.VAL_004_SCHEMA_MISMATCH,
       })
-    ),
+    }),
     Effect.map(asValidated)
   )
 }

@@ -6,6 +6,7 @@
 
 import { Layer, ManagedRuntime } from 'effect'
 import { HonertiaConfigurationError } from './errors.js'
+import { ErrorCodes, type ErrorCode } from './error-catalog.js'
 import type { Context as HonoContext, MiddlewareHandler, Env } from 'hono'
 import {
   DatabaseService,
@@ -72,11 +73,17 @@ const EFFECT_SCHEMA = Symbol('effectSchema')
 /**
  * Creates a proxy that throws a helpful error when any property is accessed.
  * Used when a service (database, auth) is not configured but the user tries to use it.
+ *
+ * @param serviceName - The name of the unconfigured service.
+ * @param configPath - The configuration path hint (e.g., 'database: (c) => ...').
+ * @param example - An example of how to configure the service.
+ * @param errorCode - The specific error code to use.
  */
 function createUnconfiguredServiceProxy(
   serviceName: string,
   configPath: string,
-  example: string
+  example: string,
+  errorCode: ErrorCode
 ): unknown {
   const message = `${serviceName} is not configured. Add it to setupHonertia: setupHonertia({ honertia: { ${configPath} } })`
 
@@ -91,6 +98,8 @@ function createUnconfiguredServiceProxy(
         throw new HonertiaConfigurationError({
           message,
           hint: `Example: ${example}`,
+          code: errorCode,
+          service: serviceName,
         })
       },
     }
@@ -203,7 +212,8 @@ export function buildContextLayer<E extends Env, CustomServices = never>(
       createUnconfiguredServiceProxy(
         'DatabaseService',
         'database: (c) => createDb(...)',
-        'database: (c) => drizzle(c.env.DB)'
+        'database: (c) => drizzle(c.env.DB)',
+        ErrorCodes.CFG_300_DATABASE_NOT_CONFIGURED
       )) as DatabaseType
   )
 
@@ -215,7 +225,8 @@ export function buildContextLayer<E extends Env, CustomServices = never>(
       createUnconfiguredServiceProxy(
         'AuthService',
         'auth: (c) => createAuth(...)',
-        'auth: (c) => betterAuth({ database: c.var.db, ... })'
+        'auth: (c) => betterAuth({ database: c.var.db, ... })',
+        ErrorCodes.CFG_301_AUTH_NOT_CONFIGURED
       )) as AuthType
   )
 

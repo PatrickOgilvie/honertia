@@ -1402,23 +1402,130 @@ registerErrorHandlers(app, {
 })
 ```
 
-Your `Error` component receives:
+Your `Error` component receives structured error props that vary by environment:
+
+**In Development** (`ENVIRONMENT=development`):
+
+```json
+{
+  "status": 500,
+  "code": "HON_CFG_100_DATABASE_NOT_CONFIGURED",
+  "title": "Database Not Configured",
+  "message": "DatabaseService is not configured. Add it to setupHonertia.",
+  "hint": "Add database to setupHonertia config",
+  "fixes": [{ "description": "Add database config", "confidence": "high" }],
+  "source": { "file": "src/routes/projects.ts", "line": 42 },
+  "docsUrl": "https://..."
+}
+```
+
+**In Production** (`ENVIRONMENT=production` or unset):
+
+```json
+{
+  "status": 500,
+  "code": "HON_CFG_100_DATABASE_NOT_CONFIGURED",
+  "title": "Database Not Configured",
+  "message": "An error occurred. Please try again later."
+}
+```
+
+In production, sensitive details (stack traces, source locations, hints, fixes) are automatically hidden while the error code and title remain visible for debugging reference.
+
+**Example React Error Component:**
 
 ```tsx
 // src/pages/Error.tsx
 interface ErrorProps {
-  status: number    // 404, 500, etc.
-  message: string   // Error message (detailed in dev, generic in prod)
+  status: number
+  code: string
+  title: string
+  message: string
+  hint?: string
+  fixes?: Array<{ description: string; confidence: string }>
+  source?: { file: string; line: number }
+  docsUrl?: string
 }
 
-export default function Error({ status, message }: ErrorProps) {
+export default function Error(props: ErrorProps) {
+  const { status, title, message, hint, fixes, source, docsUrl } = props
+
   return (
     <div className="error-page">
       <h1>{status}</h1>
+      <h2>{title}</h2>
       <p>{message}</p>
+
+      {/* Only shown in dev (these props won't exist in prod) */}
+      {hint && <p className="hint">{hint}</p>}
+
+      {source && (
+        <code>{source.file}:{source.line}</code>
+      )}
+
+      {fixes?.map((fix, i) => (
+        <div key={i} className={`fix fix-${fix.confidence}`}>
+          {fix.description}
+        </div>
+      ))}
+
+      {docsUrl && <a href={docsUrl}>View Documentation</a>}
     </div>
   )
 }
+```
+
+### Environment Detection
+
+Honertia automatically detects development mode by checking environment variables:
+
+```typescript
+// Checks these in order:
+// 1. env.ENVIRONMENT === 'development'
+// 2. env.NODE_ENV === 'development'
+// 3. env.CF_PAGES_BRANCH !== undefined (Cloudflare Pages preview deployments)
+```
+
+To enable development mode, set the environment variable in your Hono app:
+
+```toml
+# wrangler.toml
+[vars]
+ENVIRONMENT = "development"
+```
+
+Or for Bun/Node:
+
+```typescript
+// Pass env via Bun.serve or test setup
+const app = new Hono<{ Bindings: { ENVIRONMENT: string } }>()
+```
+
+### Safe Message Filtering
+
+For sensitive error categories, production automatically shows generic messages instead of implementation details:
+
+| Category | Production Message |
+|----------|-------------------|
+| `configuration` | "An error occurred. Please try again later." |
+| `internal` | "An error occurred. Please try again later." |
+| `database` | "An error occurred. Please try again later." |
+| `validation` | Original message (safe to show) |
+| `auth` | Original message (safe to show) |
+
+This ensures that configuration mistakes, database errors, and internal implementation details are never leaked to end users in production.
+
+### Error Handler Options
+
+The `registerErrorHandlers` function accepts these options:
+
+```typescript
+registerErrorHandlers(app, {
+  component: 'Error',        // React component name (required)
+  showDevErrors: true,       // Set false to always hide details (default: true)
+  envKey: 'ENVIRONMENT',     // Which env var to check (default: 'ENVIRONMENT')
+  devValue: 'development',   // What value means "dev mode" (default: 'development')
+})
 ```
 
 ### Error Handling Flow

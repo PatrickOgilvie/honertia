@@ -179,7 +179,10 @@ describe('Error Handling', () => {
 
       expect(res.status).toBe(422)
       const json = await res.json()
-      expect(json.errors).toEqual({ name: 'Required', email: 'Invalid' })
+      // Structured format includes validation details
+      expect(json.code).toMatch(/^HON_VAL_/)
+      expect(json.validation.fields.name.message).toBe('Required')
+      expect(json.validation.fields.email.message).toBe('Invalid')
     })
 
     test('renders component with errors for Inertia requests', async () => {
@@ -368,7 +371,8 @@ describe('Error Handling', () => {
       const json = await res.json()
 
       expect(json.message).toBe('Bad request')
-      expect(json.retryAfter).toBe(60)
+      // Body is now in structured format under 'body' property
+      expect(json.body.retryAfter).toBe(60)
     })
   })
 
@@ -420,7 +424,9 @@ describe('errorToResponse', () => {
     })
     expect(res.status).toBe(422)
     const json = await res.json()
-    expect(json.errors).toEqual({ field: 'Error' })
+    // New structured format includes code and validation details
+    expect(json.code).toBe('HON_VAL_004_SCHEMA_MISMATCH')
+    expect(json.validation.fields.field.message).toBe('Error')
   })
 })
 

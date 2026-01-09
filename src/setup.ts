@@ -11,6 +11,16 @@ import { honertia } from './middleware.js'
 import type { HonertiaConfig } from './types.js'
 import { loadUser, shareAuthMiddleware } from './effect/auth.js'
 import { effectBridge, type EffectBridgeConfig } from './effect/bridge.js'
+import { getStructuredFromThrown } from './effect/handler.js'
+import { toStructuredError } from './effect/errors.js'
+import { captureErrorContext } from './effect/error-context.js'
+import {
+  detectOutputFormat,
+  JsonErrorFormatter,
+  TerminalErrorFormatter,
+  InertiaErrorFormatter,
+} from './effect/error-formatter.js'
+import { createStructuredError, ErrorCodes } from './effect/error-catalog.js'
 
 /**
  * Extended Honertia configuration with database, auth, and schema.
@@ -236,23 +246,103 @@ export function createErrorHandlers<E extends Env>(config: ErrorHandlerConfig = 
     devValue = 'development',
   } = config
 
+  // Memoized formatter instances for dev and production modes
+  const formatters = {
+    dev: {
+      json: new JsonErrorFormatter({
+        pretty: true,
+        includeSource: true,
+        includeContext: true,
+        includeFixes: true,
+      }),
+      terminal: new TerminalErrorFormatter({
+        useColors: true,
+        showSnippet: true,
+        showFixes: true,
+      }),
+      inertia: new InertiaErrorFormatter({ isDev: true, includeFixes: true }),
+    },
+    prod: {
+      json: new JsonErrorFormatter({
+        pretty: false,
+        includeSource: false,
+        includeContext: false,
+        includeFixes: true,
+      }),
+      inertia: new InertiaErrorFormatter({ isDev: false, includeFixes: false }),
+    },
+  }
+
+  const getFormatters = (isDev: boolean) => (isDev ? formatters.dev : formatters.prod)
+
   const notFound = (c: Context<E>) => {
-    return c.var.honertia.render(component, {
-      status: 404,
-      message: 'Page not found',
-    })
+    const isDev = showDevErrors && (c.env as any)?.[envKey] === devValue
+    const context = captureErrorContext(c)
+    const format = detectOutputFormat(
+      {
+        header: (name: string) => c.req.header(name),
+        method: c.req.method,
+        url: c.req.url,
+      },
+      (c.env ?? {}) as Record<string, unknown>
+    )
+
+    // Create structured not found error
+    const structured = createStructuredError(
+      ErrorCodes.RES_200_NOT_FOUND,
+      { resource: 'page' },
+      context
+    )
+
+    const fmt = getFormatters(isDev)
+
+    // JSON response for API/AI requests
+    if (format === 'json') {
+      return c.json(fmt.json.format(structured), 404)
+    }
+
+    // Render Inertia error component
+    return c.var.honertia.render(component, fmt.inertia.format(structured) as Record<string, unknown>)
   }
 
   const onError = (err: Error, c: Context<E>) => {
-    console.error(err)
     const isDev = showDevErrors && (c.env as any)?.[envKey] === devValue
-    const status = (err as any).status ?? 500
-    const hint = isDev ? (err as any).hint : undefined
-    return c.var.honertia.render(component, {
-      status,
-      message: isDev ? err.message : 'Something went wrong',
-      ...(hint && { hint }),
-    })
+    const context = captureErrorContext(c)
+    const format = detectOutputFormat(
+      {
+        header: (name: string) => c.req.header(name),
+        method: c.req.method,
+        url: c.req.url,
+      },
+      (c.env ?? {}) as Record<string, unknown>
+    )
+
+    // Get structured error (may have been attached by handler.ts)
+    let structured = getStructuredFromThrown(err)
+    if (!structured) {
+      // Convert the error to structured format
+      structured = toStructuredError(err, context)
+    }
+
+    const fmt = getFormatters(isDev)
+
+    // Log in terminal format for development (suppress during tests)
+    const isTest = process.env.NODE_ENV === 'test' || process.env.BUN_ENV === 'test'
+    if (!isTest) {
+      if (isDev) {
+        console.error(formatters.dev.terminal.format(structured))
+      } else {
+        console.error(err)
+      }
+    }
+
+    // JSON response for API/AI requests
+    if (format === 'json') {
+      return c.json(fmt.json.format(structured), structured.httpStatus as any)
+    }
+
+    // Render Inertia error component
+    return c.var.honertia.render(component, fmt.inertia.format(structured) as Record<string, unknown>)
   }
 
   return { notFound, onError }

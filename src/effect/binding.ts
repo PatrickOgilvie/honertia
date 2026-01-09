@@ -140,10 +140,7 @@ export const bound = <K extends string>(
 
     // Check if schema was not configured (sentinel value set by routing.ts)
     if (models.has('__schema_not_configured__')) {
-      return yield* new RouteConfigurationError({
-        message: `Route model binding requires schema configuration. Cannot resolve bound('${key}') without schema.`,
-        hint: `Pass your schema to setupHonertia: setupHonertia({ honertia: { schema } })`
-      })
+      return yield* RouteConfigurationError.schemaNotConfigured(key)
     }
 
     const model = models.get(key)

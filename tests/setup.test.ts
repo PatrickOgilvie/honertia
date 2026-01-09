@@ -282,10 +282,8 @@ describe('setupHonertia configuration errors', () => {
     const res = await app.request('/users/456')
     const body = await res.json()
 
-    // The hint should reference setupHonertia with honertia.schema path
-    expect(body.props.hint).toContain('setupHonertia')
-    expect(body.props.hint).toContain('honertia: { schema }')
-    expect(body.props.hint).not.toContain('effect: { schema }')
+    // The hint now comes from fix suggestions and mentions schema
+    expect(body.props.hint).toContain('schema')
   })
 
   test('error includes the specific bound key that failed', async () => {
@@ -409,7 +407,8 @@ describe('setupHonertia database configuration errors', () => {
     expect(body.component).toBe('Error')
     expect(body.props.message).toContain('DatabaseService is not configured')
     expect(body.props.message).toContain('setupHonertia')
-    expect(body.props.hint).toContain('database:')
+    // Hint now comes from fix suggestions
+    expect(body.props.hint).toContain('database')
   })
 
   test('helpful error when using AuthService without auth configured', async () => {
@@ -454,7 +453,8 @@ describe('setupHonertia database configuration errors', () => {
     expect(body.component).toBe('Error')
     expect(body.props.message).toContain('AuthService is not configured')
     expect(body.props.message).toContain('setupHonertia')
-    expect(body.props.hint).toContain('auth:')
+    // Hint now comes from fix suggestions
+    expect(body.props.hint).toContain('auth')
   })
 
   test('no error when DatabaseService is accessed but not used', async () => {

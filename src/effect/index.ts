@@ -36,8 +36,78 @@ export {
   RouteConfigurationError,
   HonertiaConfigurationError,
   Redirect,
+  isStructuredError,
+  toStructuredError,
   type AppError,
+  type StructuredErrorCapable,
 } from './errors.js'
+
+// Error Types
+export type {
+  ErrorCategory,
+  ErrorContext,
+  SourceLocation,
+  CodeSnippet,
+  RouteContext,
+  HandlerContext,
+  RequestContext as ErrorRequestContext,
+  ServiceContext,
+  FixType,
+  FixPosition,
+  FixOperation,
+  PostAction,
+  FixSuggestion,
+  ErrorDocs,
+  HonertiaStructuredError,
+  FieldError,
+  ValidationErrorData,
+  ConfigurationErrorData,
+  BindingErrorData,
+  ErrorDefinition,
+  FixGenerator,
+} from './error-types.js'
+
+// Error Catalog
+export {
+  ErrorCodes,
+  ErrorCatalog,
+  createStructuredError,
+  getConfigErrorCode,
+  getErrorDefinition,
+  getErrorsByCategory,
+  type ErrorCode,
+} from './error-catalog.js'
+
+// Error Formatters
+export {
+  JsonErrorFormatter,
+  TerminalErrorFormatter,
+  InertiaErrorFormatter,
+  detectOutputFormat,
+  createFormatter,
+  type ErrorFormatter,
+  type JsonFormatterOptions,
+  type TerminalFormatterOptions,
+  type InertiaFormatterOptions,
+  type OutputFormat,
+  type FormatDetectionContext,
+} from './error-formatter.js'
+
+// Error Context
+export {
+  captureErrorContext,
+  captureEnhancedContext,
+  parseStackTrace,
+  findUserFrame,
+  createSourceLocation,
+  createCodeSnippet,
+  withHandlerContext,
+  withServiceContext,
+  mergeContexts,
+  emptyContext,
+  type StackFrame,
+  type EnhancedErrorContext,
+} from './error-context.js'
 
 // Schema Validators
 export * from './schema.js'
@@ -46,12 +116,14 @@ export * from './schema.js'
 export {
   getValidationData,
   formatSchemaErrors,
+  formatSchemaErrorsWithDetails,
   validate,
   validateRequest,
   asValidated,
   asTrusted,
   type Validated,
   type Trusted,
+  type FormattedSchemaErrors,
 } from './validation.js'
 
 // Bridge
@@ -69,6 +141,7 @@ export {
   effect,
   handle,
   errorToResponse,
+  getStructuredFromThrown,
 } from './handler.js'
 
 // Action Composables

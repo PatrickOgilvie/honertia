@@ -4,6 +4,7 @@
 
 import type { Context } from 'hono'
 import type { PageObject } from './types.js'
+import { HonertiaConfigurationError } from './effect/errors.js'
 
 export interface PageProps {
   errors?: Record<string, string>
@@ -59,7 +60,10 @@ export function createTemplate(
   return (page: PageObject, ctx?: Context) => {
     // If options is a function but no context provided, throw helpful error
     if (typeof options === 'function' && !ctx) {
-      throw new Error('createTemplate: context required when using dynamic options function')
+      throw new HonertiaConfigurationError({
+        message: 'createTemplate requires context when using dynamic options function.',
+        hint: 'Pass the Hono context to the render function, or use static options.',
+      })
     }
     const resolvedOptions = typeof options === 'function' ? options(ctx!) : options
     

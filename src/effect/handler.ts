@@ -14,8 +14,51 @@ import {
   HttpError,
   RouteConfigurationError,
   Redirect,
+  toStructuredError,
   type AppError,
 } from './errors.js'
+import { createStructuredError, ErrorCodes } from './error-catalog.js'
+import { captureErrorContext } from './error-context.js'
+import {
+  detectOutputFormat,
+  JsonErrorFormatter,
+  TerminalErrorFormatter,
+} from './error-formatter.js'
+import type { HonertiaStructuredError } from './error-types.js'
+
+/**
+ * Memoized formatter instances to avoid recreation on every error.
+ */
+const memoizedFormatters = {
+  dev: {
+    json: new JsonErrorFormatter({
+      pretty: true,
+      includeSource: true,
+      includeContext: true,
+      includeFixes: true,
+    }),
+    terminal: new TerminalErrorFormatter({
+      useColors: true,
+      showSnippet: true,
+      showFixes: true,
+    }),
+  },
+  prod: {
+    json: new JsonErrorFormatter({
+      pretty: false,
+      includeSource: false,
+      includeContext: false,
+      includeFixes: true,
+    }),
+  },
+}
+
+/**
+ * Get the appropriate JSON formatter for the environment.
+ */
+function getJsonFormatter(isDev: boolean): JsonErrorFormatter {
+  return isDev ? memoizedFormatters.dev.json : memoizedFormatters.prod.json
+}
 
 /**
  * Convert an AppError to a throwable Error for Hono's onError handler.
@@ -35,7 +78,47 @@ function toThrowableError(error: AppError): Error {
     ;(err as any).hint = error.hint
   }
 
+  // Preserve structured error for later formatting
+  ;(err as any).structuredError = error
+
   return err
+}
+
+/**
+ * Log a structured error to the console in terminal format.
+ * Suppressed during tests (NODE_ENV=test or BUN_ENV=test).
+ */
+function logStructuredError(
+  structured: HonertiaStructuredError,
+  isDev: boolean
+): void {
+  if (!isDev) return
+  // Suppress logging during tests
+  if (process.env.NODE_ENV === 'test' || process.env.BUN_ENV === 'test') return
+  console.error(memoizedFormatters.dev.terminal.format(structured))
+}
+
+/**
+ * Create a request context adapter for format detection.
+ */
+function createFormatDetectionContext<E extends Env>(c: HonoContext<E>) {
+  return {
+    header: (name: string) => c.req.header(name),
+    method: c.req.method,
+    url: c.req.url,
+  }
+}
+
+/**
+ * Determine if we're in development mode.
+ */
+function isDevelopment<E extends Env>(c: HonoContext<E>): boolean {
+  const env = c.env as Record<string, unknown> | undefined
+  return (
+    env?.ENVIRONMENT === 'development' ||
+    env?.NODE_ENV === 'development' ||
+    env?.CF_PAGES_BRANCH !== undefined
+  )
 }
 
 /**
@@ -50,6 +133,19 @@ export async function errorToResponse<E extends Env>(
   error: AppError,
   c: HonoContext<E>
 ): Promise<Response> {
+  const context = captureErrorContext(c)
+  const isDev = isDevelopment(c)
+  const format = detectOutputFormat(
+    createFormatDetectionContext(c),
+    (c.env ?? {}) as Record<string, unknown>
+  )
+
+  // Convert to structured error
+  const structured = toStructuredError(error, context)
+
+  // Log in development
+  logStructuredError(structured, isDev)
+
   // ValidationError: re-render form with errors or redirect back
   if (error instanceof ValidationError) {
     const isInertia = c.req.header('X-Inertia') === 'true'
@@ -57,8 +153,9 @@ export async function errorToResponse<E extends Env>(
       c.req.header('Accept')?.includes('application/json') ||
       c.req.header('Content-Type')?.includes('application/json')
 
-    if (prefersJson && !isInertia) {
-      return c.json({ errors: error.errors }, 422)
+    // JSON response for API/AI requests
+    if ((prefersJson && !isInertia) || format === 'json') {
+      return c.json(getJsonFormatter(isDev).format(structured), 422)
     }
 
     // For Inertia requests with a component, render the component with errors
@@ -76,6 +173,11 @@ export async function errorToResponse<E extends Env>(
 
   // UnauthorizedError: redirect to login
   if (error instanceof UnauthorizedError) {
+    // JSON response for API/AI requests
+    if (format === 'json') {
+      return c.json(getJsonFormatter(isDev).format(structured), 401)
+    }
+
     const isInertia = c.req.header('X-Inertia') === 'true'
     const redirectTo = error.redirectTo ?? '/login'
     return c.redirect(redirectTo, isInertia ? 303 : 302)
@@ -83,21 +185,30 @@ export async function errorToResponse<E extends Env>(
 
   // NotFoundError: use Hono's notFound handler (renders via Honertia if configured)
   if (error instanceof NotFoundError) {
+    // JSON response for API/AI requests
+    if (format === 'json') {
+      return c.json(getJsonFormatter(isDev).format(structured), 404)
+    }
+
     return c.notFound() as Response
   }
 
   // ForbiddenError: return 403 JSON (useful for API routes)
   if ('_tag' in error && error._tag === 'ForbiddenError') {
-    return c.json({ message: error.message }, 403)
+    // Always JSON for forbidden - consistent API behavior
+    return c.json(getJsonFormatter(isDev).format(structured), 403)
   }
 
   // HttpError: return custom status JSON (gives developers control over HTTP responses)
   if (error instanceof HttpError) {
-    return c.json({ message: error.message, ...(error.body as object) }, error.status as any)
+    return c.json(getJsonFormatter(isDev).format(structured), error.status as any)
   }
 
   // All other errors (RouteConfigurationError, etc.): throw to Hono's onError handler
-  throw toThrowableError(error)
+  const throwable = toThrowableError(error)
+  // Attach structured error for Hono's onError to use
+  ;(throwable as any).__honertiaStructured = structured
+  throw throwable
 }
 
 /**
@@ -169,22 +280,51 @@ async function handleExit<E extends Env>(
     }
   }
 
-  // Handle defects (unexpected errors) - throw to Hono's onError handler
+  // Handle defects (unexpected errors) - attach structured error for Hono's onError
+  const context = captureErrorContext(c)
+
   if (Cause.isDie(cause)) {
     const defect = Cause.dieOption(cause)
     if (defect._tag === 'Some') {
       const err = defect.value
-      // If it's already an Error, throw it directly
+
+      // If the defect is already a structured error (like HonertiaConfigurationError),
+      // convert it using its own toStructured method
+      if (err && typeof err === 'object' && 'toStructured' in err && typeof (err as any).toStructured === 'function') {
+        const structured = (err as any).toStructured(context)
+        const wrapped = new Error((err as any).message ?? String(err))
+        ;(wrapped as any).__honertiaStructured = structured
+        ;(wrapped as any).hint = (err as any).hint
+        throw wrapped
+      }
+
+      // Otherwise create a generic defect error
+      const structured = createStructuredError(
+        ErrorCodes.INT_801_EFFECT_DEFECT,
+        { reason: err instanceof Error ? err.message : String(err) },
+        context
+      )
+
       if (err instanceof Error) {
+        ;(err as any).__honertiaStructured = structured
         throw err
       }
-      // Otherwise wrap it
-      throw new Error(String(err))
+
+      const wrapped = new Error(String(err))
+      ;(wrapped as any).__honertiaStructured = structured
+      throw wrapped
     }
   }
 
-  // Fallback: throw generic error for Hono's onError handler
-  throw new Error('Unknown effect failure')
+  // Fallback: throw generic error with structured info
+  const structured = createStructuredError(
+    ErrorCodes.INT_800_UNEXPECTED,
+    { reason: 'Unknown effect failure' },
+    context
+  )
+  const fallbackError = new Error('Unknown effect failure')
+  ;(fallbackError as any).__honertiaStructured = structured
+  throw fallbackError
 }
 
 /**
@@ -200,3 +340,11 @@ export function effect<E extends Env, R, Err extends AppError>(
  * Create a handler from an Effect directly.
  */
 export const handle = effectHandler
+
+/**
+ * Get structured error from a thrown error (if available).
+ * Used by Hono's onError handler.
+ */
+export function getStructuredFromThrown(error: Error): HonertiaStructuredError | undefined {
+  return (error as any).__honertiaStructured
+}

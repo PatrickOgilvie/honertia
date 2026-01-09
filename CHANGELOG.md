@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.22] - 2026-01-09
+
+### Added
+
+- **Structured error system with dev/prod filtering**: Errors now include rich metadata in development (code, title, hint, fixes, source location, docs URL) while automatically hiding sensitive details in production
+- **Error catalog**: Centralized error definitions with unique codes (e.g., `HON_CFG_100_DATABASE_NOT_CONFIGURED`)
+- **Environment-aware error formatting**: Automatically detects development mode via `ENVIRONMENT`, `NODE_ENV`, or `CF_PAGES_BRANCH`
+- **Safe message filtering**: Configuration, internal, and database errors show generic messages in production
+
 ## [0.1.21] - 2026-01-09
 
 ### Added
