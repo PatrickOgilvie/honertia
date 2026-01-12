@@ -127,55 +127,216 @@ honertia db generate add_email  # Generate new migration
 ## Installation
 
 ```bash
-bun add honertia
-```
-
-Peer dependencies: `hono >= 4.0.0`, `better-auth >= 1.0.0`
-
----
-
-## Project Structure
-
-```
-src/
-  index.ts          # Hono app, setupHonertia()
-  routes.ts         # effectRoutes() definitions
-  actions/
-    projects/
-      index.ts      # listProjects
-      show.ts       # showProject
-      create.ts     # createProject
-      update.ts     # updateProject
-      destroy.ts    # destroyProject
-  pages/
-    Projects/
-      Index.tsx     # render('Projects/Index')
-      Show.tsx
-      Create.tsx
-      Edit.tsx
-  db/
-    db.ts
-    schema.ts
-  lib/
-    auth.ts
-  types.ts
+bun add honertia hono effect better-auth drizzle-orm
+bun add -d @types/bun typescript vite @vitejs/plugin-react @inertiajs/react react react-dom
 ```
 
 ---
 
-## Setup Examples
+## Required Files
 
-### Basic Setup
+These files MUST exist for the framework to function. Create them in this order.
+
+### 1. src/types.ts (REQUIRED FIRST)
+
+Type definitions and module augmentation. Without this, TypeScript errors will occur and services won't be typed.
+
+```typescript
+// src/types.ts
+import type { DrizzleD1Database } from 'drizzle-orm/d1'
+import type { BetterAuthReturn } from 'honertia/auth'
+import * as schema from './db/schema'
+
+// Database type
+export type Database = DrizzleD1Database<typeof schema>
+
+// Cloudflare bindings
+export type Bindings = {
+  DATABASE_URL: string
+  BETTER_AUTH_SECRET: string
+  ENVIRONMENT?: string
+  // Add KV, R2, Queue bindings as needed:
+  // KV: KVNamespace
+  // R2: R2Bucket
+}
+
+// Hono context variables
+export type Variables = {
+  db: Database
+  auth: BetterAuthReturn
+}
+
+// Full environment type for Hono
+export type Env = {
+  Bindings: Bindings
+  Variables: Variables
+}
+
+// CRITICAL: Module augmentation for type-safe services
+declare module 'honertia/effect' {
+  interface HonertiaDatabaseType {
+    type: Database
+    schema: typeof schema
+  }
+  interface HonertiaAuthType {
+    type: BetterAuthReturn
+  }
+  interface HonertiaBindingsType {
+    type: Bindings
+  }
+}
+```
+
+### 2. src/db/schema.ts (REQUIRED)
+
+Drizzle schema. Required for route model binding and database queries.
+
+```typescript
+// src/db/schema.ts
+import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core'
+import { relations } from 'drizzle-orm'
+
+export const users = sqliteTable('users', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  email: text('email').notNull().unique(),
+  emailVerified: integer('email_verified', { mode: 'boolean' }).notNull().default(false),
+  image: text('image'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+})
+
+export const sessions = sqliteTable('sessions', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  token: text('token').notNull().unique(),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+  ipAddress: text('ip_address'),
+  userAgent: text('user_agent'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+})
+
+export const accounts = sqliteTable('accounts', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  accountId: text('account_id').notNull(),
+  providerId: text('provider_id').notNull(),
+  accessToken: text('access_token'),
+  refreshToken: text('refresh_token'),
+  accessTokenExpiresAt: integer('access_token_expires_at', { mode: 'timestamp' }),
+  refreshTokenExpiresAt: integer('refresh_token_expires_at', { mode: 'timestamp' }),
+  scope: text('scope'),
+  password: text('password'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+})
+
+export const verifications = sqliteTable('verifications', {
+  id: text('id').primaryKey(),
+  identifier: text('identifier').notNull(),
+  value: text('value').notNull(),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+})
+
+// Your app tables
+export const projects = sqliteTable('projects', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  description: text('description'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+})
+
+// Relations for query builder
+export const usersRelations = relations(users, ({ many }) => ({
+  projects: many(projects),
+  sessions: many(sessions),
+  accounts: many(accounts),
+}))
+
+export const projectsRelations = relations(projects, ({ one }) => ({
+  user: one(users, { fields: [projects.userId], references: [users.id] }),
+}))
+```
+
+### 3. src/db/db.ts (REQUIRED)
+
+Database client factory.
+
+```typescript
+// src/db/db.ts
+import { drizzle } from 'drizzle-orm/d1'
+import * as schema from './schema'
+import type { Database } from '../types'
+
+export function createDb(d1: D1Database): Database {
+  return drizzle(d1, { schema })
+}
+
+// For local development with better-sqlite3:
+// import Database from 'better-sqlite3'
+// import { drizzle } from 'drizzle-orm/better-sqlite3'
+// export function createDb(path: string): Database {
+//   const sqlite = new Database(path)
+//   return drizzle(sqlite, { schema })
+// }
+```
+
+### 4. src/lib/auth.ts (REQUIRED)
+
+Better-auth configuration.
+
+```typescript
+// src/lib/auth.ts
+import { betterAuth } from 'better-auth'
+import { drizzleAdapter } from 'better-auth/adapters/drizzle'
+import type { Database } from '../types'
+
+export function createAuth(options: {
+  db: Database
+  secret: string
+  baseURL: string
+}) {
+  return betterAuth({
+    database: drizzleAdapter(options.db, {
+      provider: 'sqlite',
+    }),
+    secret: options.secret,
+    baseURL: options.baseURL,
+    emailAndPassword: {
+      enabled: true,
+    },
+    session: {
+      expiresIn: 60 * 60 * 24 * 7, // 7 days
+      updateAge: 60 * 60 * 24,     // 1 day
+    },
+  })
+}
+
+export type Auth = ReturnType<typeof createAuth>
+```
+
+### 5. src/index.ts (REQUIRED)
+
+Main app entry point.
 
 ```typescript
 // src/index.ts
 import { Hono } from 'hono'
 import { setupHonertia, createTemplate, createVersion, registerErrorHandlers } from 'honertia'
-import manifest from '../dist/manifest.json'
 import * as schema from './db/schema'
 import { createDb } from './db/db'
 import { createAuth } from './lib/auth'
 import { registerRoutes } from './routes'
+import type { Env } from './types'
+
+// Import manifest (generated by Vite build)
+// @ts-ignore - Generated at build time
+import manifest from '../dist/manifest.json'
 
 const app = new Hono<Env>()
 
@@ -184,10 +345,10 @@ app.use('*', setupHonertia<Env>({
     version: createVersion(manifest),
     render: createTemplate((ctx) => ({
       title: 'My App',
-      scripts: [manifest['src/main.tsx'].file],
-      styles: manifest['src/main.tsx'].css ?? [],
+      scripts: [manifest['src/main.tsx']?.file].filter(Boolean),
+      styles: manifest['src/main.tsx']?.css ?? [],
     })),
-    database: (c) => createDb(c.env.DATABASE_URL),
+    database: (c) => createDb(c.env.DB),
     auth: (c) => createAuth({
       db: c.var.db,
       secret: c.env.BETTER_AUTH_SECRET,
@@ -203,7 +364,9 @@ registerErrorHandlers(app)
 export default app
 ```
 
-### Routes File
+### 6. src/routes.ts (REQUIRED)
+
+Route definitions.
 
 ```typescript
 // src/routes.ts
@@ -212,12 +375,12 @@ import type { Env } from './types'
 import { effectRoutes } from 'honertia/effect'
 import { effectAuthRoutes, RequireAuthLayer } from 'honertia/auth'
 
-// Import actions
-import { listProjects, showProject, createProject, updateProject, destroyProject } from './actions/projects'
+// Import your actions
 import { loginUser, registerUser, logoutUser } from './actions/auth'
+// import { listProjects, showProject, createProject } from './actions/projects'
 
 export function registerRoutes(app: Hono<Env>) {
-  // Auth routes (login, register, logout, API)
+  // Auth routes (handles /login, /register, /logout, /api/auth/*)
   effectAuthRoutes(app, {
     loginComponent: 'Auth/Login',
     registerComponent: 'Auth/Register',
@@ -226,28 +389,391 @@ export function registerRoutes(app: Hono<Env>) {
     logoutAction: logoutUser,
   })
 
-  // Protected routes
+  // Protected routes (require authentication)
   effectRoutes(app)
     .provide(RequireAuthLayer)
     .group((route) => {
-      route.get('/', showDashboard)
-
-      route.prefix('/projects').group((route) => {
-        route.get('/', listProjects)
-        route.post('/', createProject)
-        route.get('/{project}', showProject)
-        route.put('/{project}', updateProject)
-        route.delete('/{project}', destroyProject)
-      })
+      // Add your protected routes here
+      // route.get('/', showDashboard)
+      // route.prefix('/projects').group((route) => {
+      //   route.get('/', listProjects)
+      //   route.get('/{project}', showProject)
+      //   route.post('/', createProject)
+      // })
     })
 
   // Public routes (no auth required)
   effectRoutes(app).group((route) => {
-    route.get('/about', showAbout)
-    route.get('/pricing', showPricing)
+    // route.get('/about', showAbout)
   })
 }
 ```
+
+### 7. src/main.tsx (REQUIRED)
+
+Client-side entry point.
+
+```tsx
+// src/main.tsx
+import './styles.css'
+import { createInertiaApp } from '@inertiajs/react'
+import { createRoot } from 'react-dom/client'
+
+const pages = import.meta.glob('./pages/**/*.tsx')
+
+createInertiaApp({
+  resolve: (name) => {
+    const page = pages[`./pages/${name}.tsx`]
+    if (!page) {
+      throw new Error(`Page not found: ${name}. Create src/pages/${name}.tsx`)
+    }
+    return page()
+  },
+  setup({ el, App, props }) {
+    createRoot(el!).render(<App {...props} />)
+  },
+})
+```
+
+### 8. wrangler.toml (REQUIRED for Cloudflare)
+
+```toml
+name = "my-app"
+compatibility_date = "2024-01-01"
+main = "src/index.ts"
+
+[vars]
+ENVIRONMENT = "development"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "my-app-db"
+database_id = "your-database-id"
+
+[site]
+bucket = "./dist"
+```
+
+### 9. vite.config.ts (REQUIRED)
+
+```typescript
+// vite.config.ts
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import path from 'path'
+
+export default defineConfig({
+  plugins: [react()],
+  build: {
+    outDir: 'dist',
+    manifest: 'manifest.json',
+    rollupOptions: {
+      input: 'src/main.tsx',
+    },
+  },
+  resolve: {
+    alias: {
+      '~': path.resolve(__dirname, 'src'),
+    },
+  },
+})
+```
+
+### 10. tsconfig.json (REQUIRED)
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["bun-types", "@cloudflare/workers-types"],
+    "paths": {
+      "~/*": ["./src/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
+```
+
+---
+
+## Project Structure
+
+```
+src/
+  index.ts          # App entry, setupHonertia() - REQUIRED
+  routes.ts         # Route definitions - REQUIRED
+  types.ts          # Type definitions - REQUIRED
+  main.tsx          # Client entry - REQUIRED
+  styles.css        # Global styles
+  db/
+    db.ts           # Database factory - REQUIRED
+    schema.ts       # Drizzle schema - REQUIRED
+  lib/
+    auth.ts         # Auth config - REQUIRED
+  actions/
+    auth/
+      login.ts
+      register.ts
+      logout.ts
+    projects/
+      index.ts
+      show.ts
+      create.ts
+  pages/
+    Auth/
+      Login.tsx
+      Register.tsx
+    Projects/
+      Index.tsx
+      Show.tsx
+      Create.tsx
+    Error.tsx         # Error page component
+wrangler.toml       # Cloudflare config - REQUIRED
+vite.config.ts      # Vite config - REQUIRED
+tsconfig.json       # TypeScript config - REQUIRED
+```
+
+---
+
+## Auth Actions (REQUIRED)
+
+These three actions are required for `effectAuthRoutes` to work.
+
+### src/actions/auth/login.ts
+
+```typescript
+import { betterAuthFormAction } from 'honertia/auth'
+import { Schema as S } from 'effect'
+import { email, requiredString } from 'honertia/effect'
+
+const LoginSchema = S.Struct({
+  email: email,
+  password: requiredString,
+})
+
+export const loginUser = betterAuthFormAction({
+  schema: LoginSchema,
+  errorComponent: 'Auth/Login',
+  redirectTo: '/',
+  errorMapper: (error) => {
+    switch (error.code) {
+      case 'INVALID_EMAIL_OR_PASSWORD':
+        return { email: 'Invalid email or password' }
+      case 'USER_NOT_FOUND':
+        return { email: 'No account found with this email' }
+      default:
+        return { email: 'Login failed' }
+    }
+  },
+  call: (auth, input, request) =>
+    auth.api.signInEmail({
+      body: { email: input.email, password: input.password },
+      request,
+      returnHeaders: true,
+    }),
+})
+```
+
+### src/actions/auth/register.ts
+
+```typescript
+import { betterAuthFormAction } from 'honertia/auth'
+import { Schema as S } from 'effect'
+import { email, requiredString, password } from 'honertia/effect'
+
+const RegisterSchema = S.Struct({
+  name: requiredString,
+  email: email,
+  password: password({ min: 8, letters: true, numbers: true }),
+})
+
+export const registerUser = betterAuthFormAction({
+  schema: RegisterSchema,
+  errorComponent: 'Auth/Register',
+  redirectTo: '/',
+  errorMapper: (error) => {
+    switch (error.code) {
+      case 'USER_ALREADY_EXISTS':
+        return { email: 'An account with this email already exists' }
+      default:
+        return { email: 'Registration failed' }
+    }
+  },
+  call: (auth, input, request) =>
+    auth.api.signUpEmail({
+      body: { name: input.name, email: input.email, password: input.password },
+      request,
+      returnHeaders: true,
+    }),
+})
+```
+
+### src/actions/auth/logout.ts
+
+```typescript
+import { betterAuthLogoutAction } from 'honertia/auth'
+
+export const logoutUser = betterAuthLogoutAction({
+  redirectTo: '/login',
+})
+```
+
+### src/actions/auth/index.ts
+
+```typescript
+export { loginUser } from './login'
+export { registerUser } from './register'
+export { logoutUser } from './logout'
+```
+
+---
+
+## Minimum Page Components (REQUIRED)
+
+### src/pages/Auth/Login.tsx
+
+```tsx
+import { useForm } from '@inertiajs/react'
+
+export default function Login() {
+  const { data, setData, post, processing, errors } = useForm({
+    email: '',
+    password: '',
+  })
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault()
+    post('/login')
+  }
+
+  return (
+    <form onSubmit={submit}>
+      <div>
+        <input
+          type="email"
+          value={data.email}
+          onChange={(e) => setData('email', e.target.value)}
+          placeholder="Email"
+        />
+        {errors.email && <span>{errors.email}</span>}
+      </div>
+      <div>
+        <input
+          type="password"
+          value={data.password}
+          onChange={(e) => setData('password', e.target.value)}
+          placeholder="Password"
+        />
+        {errors.password && <span>{errors.password}</span>}
+      </div>
+      <button type="submit" disabled={processing}>
+        Login
+      </button>
+    </form>
+  )
+}
+```
+
+### src/pages/Auth/Register.tsx
+
+```tsx
+import { useForm } from '@inertiajs/react'
+
+export default function Register() {
+  const { data, setData, post, processing, errors } = useForm({
+    name: '',
+    email: '',
+    password: '',
+  })
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault()
+    post('/register')
+  }
+
+  return (
+    <form onSubmit={submit}>
+      <div>
+        <input
+          type="text"
+          value={data.name}
+          onChange={(e) => setData('name', e.target.value)}
+          placeholder="Name"
+        />
+        {errors.name && <span>{errors.name}</span>}
+      </div>
+      <div>
+        <input
+          type="email"
+          value={data.email}
+          onChange={(e) => setData('email', e.target.value)}
+          placeholder="Email"
+        />
+        {errors.email && <span>{errors.email}</span>}
+      </div>
+      <div>
+        <input
+          type="password"
+          value={data.password}
+          onChange={(e) => setData('password', e.target.value)}
+          placeholder="Password"
+        />
+        {errors.password && <span>{errors.password}</span>}
+      </div>
+      <button type="submit" disabled={processing}>
+        Register
+      </button>
+    </form>
+  )
+}
+```
+
+### src/pages/Error.tsx
+
+```tsx
+interface ErrorProps {
+  status: number
+  title: string
+  message: string
+}
+
+export default function Error({ status, title, message }: ErrorProps) {
+  return (
+    <div>
+      <h1>{status}</h1>
+      <h2>{title}</h2>
+      <p>{message}</p>
+      <a href="/">Go home</a>
+    </div>
+  )
+}
+```
+
+---
+
+## Setup Checklist
+
+1. Run `bun add honertia hono effect better-auth drizzle-orm`
+2. Create `src/types.ts` with module augmentation
+3. Create `src/db/schema.ts` with your tables
+4. Create `src/db/db.ts` with database factory
+5. Create `src/lib/auth.ts` with auth config
+6. Create `src/index.ts` with app setup
+7. Create `src/routes.ts` with route definitions
+8. Create `src/actions/auth/*.ts` with auth actions
+9. Create `src/main.tsx` with client entry
+10. Create `src/pages/Auth/Login.tsx` and `Register.tsx`
+11. Create `src/pages/Error.tsx`
+12. Create `wrangler.toml`, `vite.config.ts`, `tsconfig.json`
+13. Run `bun run build` then `wrangler dev`
 
 ---
 
@@ -1031,93 +1557,6 @@ const handler = action(
     return yield* json({ cached })
   })
 )
-```
-
----
-
-## TypeScript Setup
-
-```typescript
-// src/types.ts
-import type { Database } from '~/db/db'
-import type { auth } from '~/lib/auth'
-import * as schema from '~/db/schema'
-
-export type Bindings = {
-  DATABASE_URL: string
-  BETTER_AUTH_SECRET: string
-  KV: KVNamespace
-  ENVIRONMENT?: string
-}
-
-export type Variables = {
-  db: Database
-  auth: typeof auth
-}
-
-export type Env = {
-  Bindings: Bindings
-  Variables: Variables
-}
-
-// Module augmentation for type safety
-declare module 'honertia/effect' {
-  interface HonertiaDatabaseType {
-    type: Database
-    schema: typeof schema
-  }
-  interface HonertiaAuthType {
-    type: typeof auth
-  }
-  interface HonertiaBindingsType {
-    type: Bindings
-  }
-}
-```
-
----
-
-## Client Setup
-
-```tsx
-// src/main.tsx
-import './styles.css'
-import { createInertiaApp } from '@inertiajs/react'
-import { createRoot } from 'react-dom/client'
-
-const pages = import.meta.glob('./pages/**/*.tsx')
-
-createInertiaApp({
-  resolve: (name) => {
-    const page = pages[`./pages/${name}.tsx`]
-    if (!page) throw new Error(`Page not found: ${name}`)
-    return page()
-  },
-  setup({ el, App, props }) {
-    createRoot(el).render(<App {...props} />)
-  },
-})
-```
-
-### Vite Config
-
-```typescript
-// vite.config.ts
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
-import path from 'path'
-
-export default defineConfig({
-  plugins: [tailwindcss(), react()],
-  build: {
-    outDir: 'dist',
-    manifest: 'manifest.json',
-  },
-  resolve: {
-    alias: { '~': path.resolve(__dirname, 'src') },
-  },
-})
 ```
 
 ---
