@@ -3,10 +3,27 @@
  *
  * Test helpers for integration testing Effect-based routes.
  * Enables `describeRoute()` pattern for real route testing.
+ *
+ * NOTE: This module uses lazy loading for 'bun:test' to avoid
+ * bundling issues when deploying to Cloudflare Workers.
  */
 
-import { describe, test, expect as expectBun } from 'bun:test'
 import { Layer } from 'effect'
+
+// Lazy-loaded bun:test exports (only loaded when tests actually run)
+// Using a computed module name to prevent bundlers from statically analyzing this
+let _bunTestModule: typeof import('bun:test') | null = null
+
+function getBunTestSync(): typeof import('bun:test') {
+  if (!_bunTestModule) {
+    // Compute module name to prevent static analysis by bundlers
+    const modName = ['bun', 'test'].join(':')
+    // Use require for synchronous loading (available in Bun)
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    _bunTestModule = require(modName)
+  }
+  return _bunTestModule!
+}
 import type { Hono, Env } from 'hono'
 import { RouteRegistry, getGlobalRegistry, type RouteMetadata } from './route-registry.js'
 import type { TestCaptures } from './test-layers.js'
@@ -209,6 +226,7 @@ function createTestFn<E extends Env>(
   config: TestAppConfig<E>,
   testLayer?: Layer.Layer<any, never, never>
 ): TestFn {
+  const { test, expect: expectBun } = getBunTestSync()
   return (name: string, options: TestCaseOptions) => {
     test(name, async () => {
       // Setup database if configured
@@ -472,6 +490,7 @@ export function describeRoute<E extends Env>(
   }
 
   // Create describe block
+  const { describe } = getBunTestSync()
   describe(`Route: ${routeName} [${route.method.toUpperCase()} ${route.fullPath}]`, () => {
     const testFn = createTestFn(app, route, config, testLayer)
     callback(testFn)
