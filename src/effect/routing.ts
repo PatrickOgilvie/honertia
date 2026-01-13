@@ -26,6 +26,7 @@ import {
   HonertiaService,
   RequestService,
   ResponseFactoryService,
+  BindingsService,
 } from './services.js'
 import { ValidatedBodyService, ValidatedQueryService } from './validated-services.js'
 import { validate } from './validation.js'
@@ -64,6 +65,7 @@ export type BaseServices =
   | HonertiaService
   | DatabaseService
   | AuthService
+  | BindingsService
   | BoundModels
   | ValidatedBodyService
   | ValidatedQueryService

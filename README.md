@@ -144,7 +144,7 @@ Type definitions and module augmentation. Without this, TypeScript errors will o
 ```typescript
 // src/types.ts
 import type { DrizzleD1Database } from 'drizzle-orm/d1'
-import type { BetterAuthReturn } from 'honertia/auth'
+import type { Auth } from './lib/auth'
 import * as schema from './db/schema'
 
 // Database type
@@ -163,7 +163,7 @@ export type Bindings = {
 // Hono context variables
 export type Variables = {
   db: Database
-  auth: BetterAuthReturn
+  auth: Auth
 }
 
 // Full environment type for Hono
@@ -179,7 +179,7 @@ declare module 'honertia/effect' {
     schema: typeof schema
   }
   interface HonertiaAuthType {
-    type: BetterAuthReturn
+    type: Auth
   }
   interface HonertiaBindingsType {
     type: Bindings
