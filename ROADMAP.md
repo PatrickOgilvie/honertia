@@ -2931,7 +2931,7 @@ export const createProject = action(
 // ─────────────────────────────────────────────────────────────
 
 // Tests run automatically when file is executed with bun test
-if (typeof Bun !== 'undefined' && Bun.env.NODE_ENV === 'test' || process.env.BUN_TEST) {
+if (typeof Bun !== 'undefined' && Bun.env?.NODE_ENV === 'test') {
   const { describe, test, expect } = await import('bun:test')
   const { Hono } = await import('hono')
   const { effectRoutes, effectBridge, RouteRegistry } = await import('honertia/effect')

@@ -327,7 +327,7 @@ export function createErrorHandlers<E extends Env>(config: ErrorHandlerConfig = 
     const fmt = getFormatters(isDev)
 
     // Log in terminal format for development (suppress during tests)
-    const isTest = process.env.NODE_ENV === 'test' || process.env.BUN_ENV === 'test'
+    const isTest = (typeof Bun !== 'undefined' && Bun.env?.NODE_ENV === 'test')
     if (!isTest) {
       if (isDev) {
         console.error(formatters.dev.terminal.format(structured))

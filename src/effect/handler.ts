@@ -94,7 +94,7 @@ function logStructuredError(
 ): void {
   if (!isDev) return
   // Suppress logging during tests
-  if (process.env.NODE_ENV === 'test' || process.env.BUN_ENV === 'test') return
+  if (typeof Bun !== 'undefined' && Bun.env?.NODE_ENV === 'test') return
   console.error(memoizedFormatters.dev.terminal.format(structured))
 }
 
