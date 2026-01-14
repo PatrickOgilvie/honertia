@@ -61,7 +61,7 @@ export function honertia(config: HonertiaConfig): MiddlewareHandler {
 
     // Version mismatch - force full reload
     if (isHonertia && clientVersion && clientVersion !== version && c.req.method === 'GET') {
-      return new Response(null, {
+      return c.body(null, {
         status: 409,
         headers: { [HEADERS.LOCATION]: c.req.url },
       })
@@ -152,7 +152,7 @@ export function honertia(config: HonertiaConfig): MiddlewareHandler {
     ) {
       const location = c.res.headers.get('Location')
       if (location) {
-        return new Response(null, {
+        c.res = new Response(null, {
           status: 303,
           headers: { 'Location': location, 'Vary': HEADERS.HONERTIA },
         })

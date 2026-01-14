@@ -687,3 +687,158 @@ describe('setupHonertia full configuration', () => {
     expect(customMiddlewareRan).toBe(true)
   })
 })
+
+// =============================================================================
+// Middleware Dispatcher Tests (regression for "Context is not finalized")
+// =============================================================================
+
+describe('setupHonertia middleware dispatcher (regression)', () => {
+  test('dispatcher properly propagates response through middleware chain', async () => {
+    const app = new Hono<TestEnv>()
+    const executed: string[] = []
+
+    app.use(
+      '*',
+      setupHonertia({
+        honertia: {
+          version: '1.0.0',
+          render: (page) => JSON.stringify(page),
+        },
+        middleware: [
+          async (c, next) => {
+            executed.push('custom-before')
+            await next()
+            executed.push('custom-after')
+          },
+        ],
+      })
+    )
+
+    effectRoutes(app).post(
+      '/form',
+      Effect.gen(function* () {
+        executed.push('handler')
+        return Response.redirect('/success', 302)
+      })
+    )
+
+    const res = await app.request('/form', {
+      method: 'POST',
+      headers: { 'X-Inertia': 'true' },
+    })
+
+    // Response should be valid (303 due to 302->303 conversion)
+    expect(res.status).toBe(303)
+    expect(res.headers.get('Location')).toBe('/success')
+
+    // All middleware should have executed
+    expect(executed).toContain('custom-before')
+    expect(executed).toContain('handler')
+    expect(executed).toContain('custom-after')
+  })
+
+  test('dispatcher handles early return from custom middleware', async () => {
+    const app = new Hono<TestEnv>()
+
+    app.use(
+      '*',
+      setupHonertia({
+        honertia: {
+          version: '1.0.0',
+          render: (page) => JSON.stringify(page),
+        },
+        middleware: [
+          async (c, next) => {
+            // Early return - don't call next()
+            if (c.req.header('X-Block') === 'true') {
+              return c.text('Blocked', 403)
+            }
+            await next()
+          },
+        ],
+      })
+    )
+
+    effectRoutes(app).get(
+      '/protected',
+      Effect.gen(function* () {
+        return new Response('OK')
+      })
+    )
+
+    // Without block header - should reach handler
+    const res1 = await app.request('/protected')
+    expect(res1.status).toBe(200)
+    expect(await res1.text()).toBe('OK')
+
+    // With block header - should return early
+    const res2 = await app.request('/protected', {
+      headers: { 'X-Block': 'true' },
+    })
+    expect(res2.status).toBe(403)
+    expect(await res2.text()).toBe('Blocked')
+  })
+
+  test('dispatcher handles response modification after next()', async () => {
+    const app = new Hono<TestEnv>()
+
+    app.use(
+      '*',
+      setupHonertia({
+        honertia: {
+          version: '1.0.0',
+          render: (page) => JSON.stringify(page),
+        },
+        middleware: [
+          async (c, next) => {
+            await next()
+            // Modify response after handler
+            c.res.headers.set('X-Custom-Header', 'added')
+          },
+        ],
+      })
+    )
+
+    effectRoutes(app).get(
+      '/test',
+      Effect.gen(function* () {
+        return new Response('OK')
+      })
+    )
+
+    const res = await app.request('/test')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('X-Custom-Header')).toBe('added')
+  })
+
+  test('version mismatch returns 409 through dispatcher without error', async () => {
+    const app = new Hono<TestEnv>()
+
+    app.use(
+      '*',
+      setupHonertia({
+        honertia: {
+          version: '2.0.0',
+          render: (page) => JSON.stringify(page),
+        },
+      })
+    )
+
+    effectRoutes(app).get(
+      '/page',
+      Effect.gen(function* () {
+        return new Response('OK')
+      })
+    )
+
+    const res = await app.request('/page', {
+      headers: {
+        'X-Inertia': 'true',
+        'X-Inertia-Version': '1.0.0', // Old version
+      },
+    })
+
+    expect(res.status).toBe(409)
+    expect(res.headers.get('X-Inertia-Location')).toBeTruthy()
+  })
+})

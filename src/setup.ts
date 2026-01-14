@@ -190,7 +190,14 @@ export function setupHonertia<
         await next()
         return
       }
-      await middlewares[i](c, () => dispatch(i + 1))
+      // Call middleware and capture result (following Hono's compose pattern)
+      const res = await middlewares[i](c, async () => {
+        await dispatch(i + 1)
+      })
+      // If middleware returned a Response and context isn't finalized, set c.res
+      if (res && !c.finalized) {
+        c.res = res
+      }
     }
     await dispatch(0)
   })

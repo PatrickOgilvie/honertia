@@ -341,7 +341,7 @@ describe('Honertia Middleware', () => {
   })
 
   describe('Redirect Handling', () => {
-    test('preserves 302 redirect status', async () => {
+    test('converts 302 to 303 for POST requests with Honertia', async () => {
       const app = createApp()
       app.post('/form', (c) => c.redirect('/success', 302))
 
@@ -350,13 +350,13 @@ describe('Honertia Middleware', () => {
         headers: { [HEADERS.HONERTIA]: 'true' },
       })
 
-      // The middleware converts 302 to 303 for mutating requests,
-      // but this only happens if the response goes through middleware properly
-      expect([302, 303]).toContain(res.status)
+      // The middleware MUST convert 302 to 303 for mutating requests
+      // to prevent browsers from changing POST to GET on redirect
+      expect(res.status).toBe(303)
       expect(res.headers.get('Location')).toBe('/success')
     })
 
-    test('handles redirect for PUT requests with Inertia', async () => {
+    test('converts 302 to 303 for PUT requests with Honertia', async () => {
       const app = createApp()
       app.put('/item', (c) => c.redirect('/success', 302))
 
@@ -365,7 +365,32 @@ describe('Honertia Middleware', () => {
         headers: { [HEADERS.HONERTIA]: 'true' },
       })
 
-      expect([302, 303]).toContain(res.status)
+      expect(res.status).toBe(303)
+    })
+
+    test('converts 302 to 303 for DELETE requests with Honertia', async () => {
+      const app = createApp()
+      app.delete('/item', (c) => c.redirect('/list', 302))
+
+      const res = await app.request('/item', {
+        method: 'DELETE',
+        headers: { [HEADERS.HONERTIA]: 'true' },
+      })
+
+      expect(res.status).toBe(303)
+      expect(res.headers.get('Location')).toBe('/list')
+    })
+
+    test('converts 302 to 303 for PATCH requests with Honertia', async () => {
+      const app = createApp()
+      app.patch('/item', (c) => c.redirect('/success', 302))
+
+      const res = await app.request('/item', {
+        method: 'PATCH',
+        headers: { [HEADERS.HONERTIA]: 'true' },
+      })
+
+      expect(res.status).toBe(303)
     })
 
     test('does not convert 302 for GET requests', async () => {
@@ -887,15 +912,12 @@ describe('Honertia Middleware', () => {
       app.post('/form', (c) => c.redirect('/success', 302))
       app.get('/redirect', (c) => c.redirect('/success', 302))
 
-      // POST with Inertia - the middleware attempts to convert 302 to 303
-      // but this depends on how Hono handles the response flow
+      // POST with Honertia MUST convert 302 to 303
       const postRes = await app.request('/form', {
         method: 'POST',
         headers: { [HEADERS.HONERTIA]: 'true' },
       })
-      // Accept either 302 or 303 - the middleware tries to convert but
-      // the exact behavior depends on Hono's response handling
-      expect([302, 303]).toContain(postRes.status)
+      expect(postRes.status).toBe(303)
       expect(postRes.headers.get('Location')).toBe('/success')
 
       // GET with Inertia should stay 302
@@ -1009,5 +1031,119 @@ describe('HEADERS constant', () => {
     expect(HEADERS.PARTIAL_DATA).toBe('X-Inertia-Partial-Data')
     expect(HEADERS.PARTIAL_EXCEPT).toBe('X-Inertia-Partial-Except')
     expect(HEADERS.LOCATION).toBe('X-Inertia-Location')
+  })
+})
+
+/**
+ * Regression tests for "Context is not finalized" errors.
+ *
+ * These tests ensure middleware properly returns responses and doesn't
+ * cause Hono to throw "Context is not finalized" errors.
+ */
+describe('Context Finalization (regression)', () => {
+  test('POST redirect with Honertia headers does not throw context error', async () => {
+    const app = createApp()
+    app.post('/login', (c) => c.redirect('/dashboard', 302))
+
+    // This specific scenario previously caused "Context is not finalized"
+    const res = await app.request('/login', {
+      method: 'POST',
+      headers: { [HEADERS.HONERTIA]: 'true' },
+    })
+
+    // Must get a valid response, not an error
+    expect(res.status).toBe(303)
+    expect(res.headers.get('Location')).toBe('/dashboard')
+  })
+
+  test('version mismatch returns 409 without context error', async () => {
+    const app = createApp()
+    app.get('/page', (c) => c.var.honertia.render('Page'))
+
+    // Version mismatch early return
+    const res = await app.request('/page', {
+      headers: {
+        [HEADERS.HONERTIA]: 'true',
+        [HEADERS.VERSION]: 'old-version',
+      },
+    })
+
+    expect(res.status).toBe(409)
+    expect(res.headers.get(HEADERS.LOCATION)).toBeTruthy()
+  })
+
+  test('multiple middleware in chain all complete without context error', async () => {
+    const app = new Hono()
+    const executed: string[] = []
+
+    // First middleware
+    app.use('*', async (c, next) => {
+      executed.push('middleware-1-before')
+      await next()
+      executed.push('middleware-1-after')
+    })
+
+    // Honertia middleware
+    app.use(
+      '*',
+      honertia({
+        version: '1.0.0',
+        render: async (page) => `<html>${JSON.stringify(page)}</html>`,
+      })
+    )
+
+    // Third middleware
+    app.use('*', async (c, next) => {
+      executed.push('middleware-3-before')
+      await next()
+      executed.push('middleware-3-after')
+    })
+
+    app.post('/form', (c) => {
+      executed.push('handler')
+      return c.redirect('/success', 302)
+    })
+
+    const res = await app.request('/form', {
+      method: 'POST',
+      headers: { [HEADERS.HONERTIA]: 'true' },
+    })
+
+    // Response should be valid
+    expect(res.status).toBe(303)
+
+    // All middleware should have executed in correct order
+    expect(executed).toEqual([
+      'middleware-1-before',
+      'middleware-3-before',
+      'handler',
+      'middleware-3-after',
+      'middleware-1-after',
+    ])
+  })
+
+  test('redirect without Location header does not throw', async () => {
+    const app = new Hono()
+
+    app.use(
+      '*',
+      honertia({
+        version: '1.0.0',
+        render: async (page) => `<html>${JSON.stringify(page)}</html>`,
+      })
+    )
+
+    // Edge case: 302 response without Location header
+    app.post('/weird', (c) => {
+      return new Response(null, { status: 302 })
+    })
+
+    const res = await app.request('/weird', {
+      method: 'POST',
+      headers: { [HEADERS.HONERTIA]: 'true' },
+    })
+
+    // Should still get a response (302 stays 302 since no Location to convert)
+    expect(res.status).toBe(302)
   })
 })
