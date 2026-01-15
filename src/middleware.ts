@@ -145,8 +145,10 @@ export function honertia(config: HonertiaConfig): MiddlewareHandler {
     await next()
 
     // Convert 302 to 303 for non-GET requests
+    // Guard against c.res being undefined (no handler matched)
     if (
       isHonertia &&
+      c.res &&
       c.res.status === 302 &&
       ['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)
     ) {
