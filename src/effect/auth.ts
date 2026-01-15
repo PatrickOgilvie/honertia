@@ -131,6 +131,9 @@ export function shareAuthMiddleware<E extends Env>(): MiddlewareHandler<E> {
       honertia.share('auth', { user: authUser?.user ?? null })
     }
     await next()
+
+    // Return response for proper propagation in forwarding/proxy scenarios
+    return c.res
   }
 }
 
@@ -363,7 +366,8 @@ export function loadUser<E extends Env>(
     const auth = (c as any).var?.auth
     if (!auth) {
       await next()
-      return
+      // Return response for proper propagation in forwarding/proxy scenarios
+      return c.res
     }
 
     try {
@@ -379,6 +383,9 @@ export function loadUser<E extends Env>(
     }
 
     await next()
+
+    // Return response for proper propagation in forwarding/proxy scenarios
+    return c.res
   }
 }
 

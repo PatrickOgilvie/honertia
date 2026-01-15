@@ -337,6 +337,9 @@ export function effectBridge<E extends Env, CustomServices = never>(
       // Cleanup runtime after request
       await runtime.dispose()
     }
+
+    // Return response for proper propagation in forwarding/proxy scenarios
+    return c.res
   }
 }
 

@@ -185,10 +185,11 @@ export function setupHonertia<
   ]
 
   return createMiddleware<E>(async (c, next) => {
-    const dispatch = async (i: number): Promise<void> => {
+    const dispatch = async (i: number): Promise<Response | void> => {
       if (i >= middlewares.length) {
         await next()
-        return
+        // Return response for proper propagation in forwarding/proxy scenarios
+        return c.res
       }
       // Call middleware and capture result (following Hono's compose pattern)
       const res = await middlewares[i](c, async () => {
