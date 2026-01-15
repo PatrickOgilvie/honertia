@@ -160,6 +160,9 @@ export function honertia(config: HonertiaConfig): MiddlewareHandler {
         })
       }
     }
+
+    // Return the response to ensure proper propagation in forwarding scenarios
+    return c.res
   }
 }
 

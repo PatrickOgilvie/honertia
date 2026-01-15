@@ -1146,4 +1146,66 @@ describe('Context Finalization (regression)', () => {
     // Should still get a response (302 stays 302 since no Location to convert)
     expect(res.status).toBe(302)
   })
+
+  test('middleware returns response for proper propagation in forwarding scenarios', async () => {
+    // This tests that the honertia middleware properly returns c.res
+    // which is critical for request forwarding/sandbox scenarios
+    const innerApp = new Hono()
+
+    innerApp.use(
+      '*',
+      honertia({
+        version: '1.0.0',
+        render: async (page) => `<html>${JSON.stringify(page)}</html>`,
+      })
+    )
+
+    innerApp.get('/page', (c) => c.var.honertia.render('Page', { data: 'test' }))
+    innerApp.post('/submit', (c) => c.redirect('/success', 302))
+
+    // Outer app that forwards requests (simulating sandbox forwarding)
+    const outerApp = new Hono()
+    outerApp.all('*', async (c) => {
+      // Forward request to inner app
+      const res = await innerApp.request(c.req.raw)
+      return res
+    })
+
+    // Test regular render
+    const getRes = await outerApp.request('/page', {
+      headers: { [HEADERS.HONERTIA]: 'true' },
+    })
+    expect(getRes.status).toBe(200)
+    const json = await getRes.json()
+    expect(json.component).toBe('Page')
+
+    // Test redirect conversion
+    const postRes = await outerApp.request('/submit', {
+      method: 'POST',
+      headers: { [HEADERS.HONERTIA]: 'true' },
+    })
+    expect(postRes.status).toBe(303)
+    expect(postRes.headers.get('Location')).toBe('/success')
+  })
+
+  test('middleware returns response even when no handler matches', async () => {
+    const app = new Hono()
+
+    app.use(
+      '*',
+      honertia({
+        version: '1.0.0',
+        render: async (page) => `<html>${JSON.stringify(page)}</html>`,
+      })
+    )
+
+    // No route defined for /missing
+
+    const res = await app.request('/missing', {
+      headers: { [HEADERS.HONERTIA]: 'true' },
+    })
+
+    // Should get Hono's 404 response
+    expect(res.status).toBe(404)
+  })
 })
