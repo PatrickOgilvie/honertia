@@ -200,6 +200,9 @@ export function setupHonertia<
       }
     }
     await dispatch(0)
+
+    // Return the response to ensure proper propagation in forwarding/proxy scenarios
+    return c.res
   })
 }
 
