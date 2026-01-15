@@ -308,8 +308,13 @@ export function createErrorHandlers<E extends Env>(config: ErrorHandlerConfig = 
       return c.json(fmt.json.format(structured), 404)
     }
 
-    // Render Inertia error component
-    return c.var.honertia.render(component, fmt.inertia.format(structured) as Record<string, unknown>)
+    // Render Inertia error component (if honertia middleware has run)
+    if (c.var.honertia?.render) {
+      return c.var.honertia.render(component, fmt.inertia.format(structured) as Record<string, unknown>)
+    }
+
+    // Fallback: return JSON if honertia isn't available
+    return c.json(fmt.json.format(structured), 404)
   }
 
   const onError = (err: Error, c: Context<E>) => {
@@ -348,8 +353,13 @@ export function createErrorHandlers<E extends Env>(config: ErrorHandlerConfig = 
       return c.json(fmt.json.format(structured), structured.httpStatus as any)
     }
 
-    // Render Inertia error component
-    return c.var.honertia.render(component, fmt.inertia.format(structured) as Record<string, unknown>)
+    // Render Inertia error component (if honertia middleware has run)
+    if (c.var.honertia?.render) {
+      return c.var.honertia.render(component, fmt.inertia.format(structured) as Record<string, unknown>)
+    }
+
+    // Fallback: return JSON if honertia isn't available
+    return c.json(fmt.json.format(structured), structured.httpStatus as any)
   }
 
   return { notFound, onError }

@@ -1,6 +1,6 @@
 {
   "name": "honertia",
-  "version": "0.1.26",
+  "version": "0.1.27",
   "description": "Inertia.js-style server-driven SPA adapter for Hono",
   "type": "module",
   "main": "./dist/index.js",

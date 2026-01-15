@@ -841,4 +841,36 @@ describe('setupHonertia middleware dispatcher (regression)', () => {
     expect(res.status).toBe(409)
     expect(res.headers.get('X-Inertia-Location')).toBeTruthy()
   })
+
+  test('catch-all route that does not call next() still finalizes context', async () => {
+    const app = new Hono<TestEnv>()
+
+    app.use(
+      '*',
+      setupHonertia({
+        honertia: {
+          version: '1.0.0',
+          render: (page) => JSON.stringify(page),
+        },
+      })
+    )
+
+    // Register error handlers
+    registerErrorHandlers(app, {
+      component: 'Error',
+      showDevErrors: true,
+    })
+
+    // Catch-all route that returns a response
+    effectRoutes(app).get(
+      '/*',
+      Effect.gen(function* () {
+        return new Response('Catch all', { status: 200 })
+      })
+    )
+
+    const res = await app.request('/anything')
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('Catch all')
+  })
 })
