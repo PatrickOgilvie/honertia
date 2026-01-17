@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.32] - 2026-01-17
+
+### Added
+
+- **CacheService**: New Effect service for caching expensive database operations with automatic serialization
+  - Backed by Cloudflare KV by default, automatically provided when `c.env.KV` is available
+  - Swappable for Redis, Memcached, or any custom implementation via Layer
+  - `cache(key, compute, schema, ttl)` - Get from cache or compute and store with type-safe serialization
+  - `cacheGet(key, schema)` - Get value from cache (returns `Option`)
+  - `cacheSet(key, value, schema, ttl)` - Store value in cache
+  - `cacheInvalidate(key)` - Delete a single cache key
+  - `cacheInvalidatePrefix(prefix)` - Delete all keys matching a prefix (with concurrency limit)
+  ```typescript
+  const projects = yield* cache(
+    `projects:user:${auth.user.id}`,
+    Effect.tryPromise(() => db.query.projects.findMany({ where: eq(projects.userId, auth.user.id) })),
+    S.Array(ProjectSchema),
+    Duration.minutes(5)
+  )
+  ```
+- **CacheClient interface**: Abstraction layer for cache implementations with `get`, `put`, `delete`, `list` methods
+- **CacheClientError**: Error class for cache client operations
+- **CacheError**: Tagged error for high-level cache function failures
+- Comprehensive cache documentation in README with setup, usage patterns, custom implementations, and testing examples
+- `honertia/cache` export path for standalone cache imports
+- 20 cache-specific tests covering all cache operations, error handling, and integration patterns
+
 ## [0.1.22] - 2026-01-09
 
 ### Added

@@ -16,10 +16,13 @@ import {
   RequestService,
   ResponseFactoryService,
   BindingsService,
+  CacheService,
+  CacheClientError,
   type AuthUser,
   type RequestContext,
   type ResponseFactory,
   type HonertiaRenderer,
+  type CacheClient,
   type DatabaseType,
   type AuthType,
   type BindingsType,
@@ -177,6 +180,59 @@ function createResponseFactory<E extends Env>(c: HonoContext<E>): ResponseFactor
 }
 
 /**
+ * Cloudflare KV Namespace interface (subset of the full API).
+ */
+interface KVNamespace {
+  get(key: string, options?: { type?: 'text' }): Promise<string | null>
+  put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>
+  delete(key: string): Promise<void>
+  list(options?: { prefix?: string }): Promise<{ keys: Array<{ name: string }> }>
+}
+
+/**
+ * Create a CacheClient from Cloudflare KV binding.
+ */
+function createKVCacheClient(kv: KVNamespace): CacheClient {
+  return {
+    get: (key) =>
+      Effect.tryPromise({
+        try: () => kv.get(key),
+        catch: (e) => new CacheClientError('Failed to get from cache', e),
+      }),
+    put: (key, value, options) =>
+      Effect.tryPromise({
+        try: () => kv.put(key, value, options),
+        catch: (e) => new CacheClientError('Failed to set cache', e),
+      }),
+    delete: (key) =>
+      Effect.tryPromise({
+        try: () => kv.delete(key),
+        catch: (e) => new CacheClientError('Failed to delete from cache', e),
+      }),
+    list: (options) =>
+      Effect.tryPromise({
+        try: () => kv.list(options),
+        catch: (e) => new CacheClientError('Failed to list cache keys', e),
+      }),
+  }
+}
+
+/**
+ * Create a no-op CacheClient that fails with helpful errors when KV is not configured.
+ */
+function createUnconfiguredCacheClient(): CacheClient {
+  const error = new CacheClientError(
+    'CacheService requires KV binding. Add KV to your wrangler.toml and ensure it is available in c.env.KV'
+  )
+  return {
+    get: () => Effect.fail(error),
+    put: () => Effect.fail(error),
+    delete: () => Effect.fail(error),
+    list: () => Effect.fail(error),
+  }
+}
+
+/**
  * Create a HonertiaRenderer from Hono context.
  */
 function createHonertiaRenderer<E extends Env>(c: HonoContext<E>): HonertiaRenderer {
@@ -209,6 +265,7 @@ export function buildContextLayer<E extends Env, CustomServices = never>(
   | AuthService
   | AuthUserService
   | BindingsService
+  | CacheService
   | CustomServices,
   never,
   never
@@ -221,6 +278,13 @@ export function buildContextLayer<E extends Env, CustomServices = never>(
   const bindingsLayer = Layer.succeed(
     BindingsService,
     (c.env ?? {}) as BindingsType
+  )
+
+  // Cache layer - backed by KV if available, otherwise unconfigured client
+  const kv = (c.env as { KV?: KVNamespace } | undefined)?.KV
+  const cacheLayer = Layer.succeed(
+    CacheService,
+    kv ? createKVCacheClient(kv) : createUnconfiguredCacheClient()
   )
 
   // Database layer - provide helpful error proxy if not configured
@@ -254,6 +318,7 @@ export function buildContextLayer<E extends Env, CustomServices = never>(
     responseLayer,
     honertiaLayer,
     bindingsLayer,
+    cacheLayer,
     databaseLayer,
     authLayer
   )
@@ -273,6 +338,7 @@ export function buildContextLayer<E extends Env, CustomServices = never>(
     | ResponseFactoryService
     | HonertiaService
     | BindingsService
+    | CacheService
     | DatabaseService
     | AuthService
     | AuthUserService

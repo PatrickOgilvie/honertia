@@ -258,3 +258,39 @@ export class ResponseFactoryService extends Context.Tag('honertia/ResponseFactor
   ResponseFactoryService,
   ResponseFactory
 >() {}
+
+/**
+ * Cache Service - KV-backed caching for expensive operations
+ *
+ * Automatically provided by setupHonertia when KV binding is available.
+ * Falls back to a no-op implementation if KV is not configured.
+ *
+ * @example
+ * ```typescript
+ * // In your action
+ * const cacheService = yield* CacheService
+ * const cached = yield* cacheService.get('user:123')
+ * ```
+ */
+export interface CacheClient {
+  get(key: string): Effect.Effect<string | null, CacheClientError>
+  put(key: string, value: string, options?: { expirationTtl?: number }): Effect.Effect<void, CacheClientError>
+  delete(key: string): Effect.Effect<void, CacheClientError>
+  list(options?: { prefix?: string }): Effect.Effect<{ keys: Array<{ name: string }> }, CacheClientError>
+}
+
+/**
+ * Error from cache client operations.
+ */
+export class CacheClientError {
+  readonly _tag = 'CacheClientError'
+  constructor(
+    readonly reason: string,
+    readonly cause?: unknown
+  ) {}
+}
+
+export class CacheService extends Context.Tag('honertia/Cache')<
+  CacheService,
+  CacheClient
+>() {}

@@ -792,24 +792,39 @@ export const showAbout = action(
 )
 ```
 
-### GET with Authentication
+### GET with Authentication and Caching
 
 ```typescript
-import { Effect } from 'effect'
-import { action, authorize, render, DatabaseService } from 'honertia/effect'
+import { Effect, Schema as S, Duration } from 'effect'
+import { action, authorize, render, DatabaseService, cache } from 'honertia/effect'
 import { eq } from 'drizzle-orm'
 import { projects } from '~/db/schema'
+
+const ProjectSchema = S.Struct({
+  id: S.String,
+  userId: S.String,
+  name: S.String,
+  description: S.NullOr(S.String),
+  createdAt: S.Date,
+  updatedAt: S.Date,
+})
 
 export const listProjects = action(
   Effect.gen(function* () {
     const auth = yield* authorize()
     const db = yield* DatabaseService
 
-    const userProjects = yield* Effect.tryPromise(() =>
-      db.query.projects.findMany({
-        where: eq(projects.userId, auth.user.id),
-        orderBy: (p, { desc }) => [desc(p.createdAt)],
-      })
+    // Cache expensive database query for 5 minutes
+    const userProjects = yield* cache(
+      `projects:user:${auth.user.id}`,
+      Effect.tryPromise(() =>
+        db.query.projects.findMany({
+          where: eq(projects.userId, auth.user.id),
+          orderBy: (p, { desc }) => [desc(p.createdAt)],
+        })
+      ),
+      S.Array(ProjectSchema),
+      Duration.minutes(5)
     )
 
     return yield* render('Projects/Index', { projects: userProjects })
@@ -1532,6 +1547,371 @@ return yield* httpError(429, 'Rate limited')
 
 ---
 
+## Caching
+
+Honertia provides a `CacheService` for caching expensive database operations. It's automatically provided and backed by Cloudflare KV by default, but can be swapped for Redis, Memcached, or any other implementation.
+
+### Setup
+
+Add KV to your `wrangler.toml`:
+
+```toml
+[[kv_namespaces]]
+binding = "KV"
+id = "your-kv-namespace-id"
+```
+
+Update your bindings type in `src/types.ts`:
+
+```typescript
+export type Bindings = {
+  DATABASE_URL: string
+  BETTER_AUTH_SECRET: string
+  KV: KVNamespace  // Add this
+}
+```
+
+No additional registration needed - `CacheService` is automatically available in all actions.
+
+### Basic Usage
+
+```typescript
+import { Effect, Schema as S, Duration } from 'effect'
+import { action, authorize, render, DatabaseService, cache } from 'honertia/effect'
+import { eq } from 'drizzle-orm'
+import { projects } from '~/db/schema'
+
+const ProjectSchema = S.Struct({
+  id: S.String,
+  userId: S.String,
+  name: S.String,
+  description: S.NullOr(S.String),
+  createdAt: S.Date,
+  updatedAt: S.Date,
+})
+
+export const listProjects = action(
+  Effect.gen(function* () {
+    const auth = yield* authorize()
+    const db = yield* DatabaseService
+
+    // Cache the database query for 5 minutes
+    const userProjects = yield* cache(
+      `projects:user:${auth.user.id}`,
+      Effect.tryPromise({
+        try: () =>
+          db.query.projects.findMany({
+            where: eq(projects.userId, auth.user.id),
+            orderBy: (p, { desc }) => [desc(p.createdAt)],
+          }),
+        catch: (error) => new Error(String(error)),
+      }),
+      S.Array(ProjectSchema),
+      Duration.minutes(5)
+    )
+
+    return yield* render('Projects/Index', { projects: userProjects })
+  })
+)
+```
+
+### Cache Functions
+
+| Function | Description |
+|----------|-------------|
+| `cache(key, compute, schema, ttl)` | Get from cache or compute and store |
+| `cacheGet(key, schema)` | Get value from cache (returns `Option`) |
+| `cacheSet(key, value, schema, ttl)` | Store value in cache |
+| `cacheInvalidate(key)` | Delete a single cache key |
+| `cacheInvalidatePrefix(prefix)` | Delete all keys with prefix |
+
+### Cache Invalidation
+
+Invalidate cache when data changes:
+
+```typescript
+import { Effect, Schema as S } from 'effect'
+import {
+  action,
+  authorize,
+  validateRequest,
+  DatabaseService,
+  redirect,
+  asTrusted,
+  dbMutation,
+  requiredString,
+  cacheInvalidate,
+} from 'honertia/effect'
+import { projects } from '~/db/schema'
+
+const CreateProjectSchema = S.Struct({
+  name: requiredString,
+  description: S.optional(S.String),
+})
+
+export const createProject = action(
+  Effect.gen(function* () {
+    const auth = yield* authorize()
+    const input = yield* validateRequest(CreateProjectSchema, {
+      errorComponent: 'Projects/Create',
+    })
+    const db = yield* DatabaseService
+
+    yield* dbMutation(db, async (db) => {
+      await db.insert(projects).values(
+        asTrusted({
+          name: input.name,
+          description: input.description ?? null,
+          userId: auth.user.id,
+        })
+      )
+    })
+
+    // Invalidate the user's project list cache
+    yield* cacheInvalidate(`projects:user:${auth.user.id}`)
+
+    return yield* redirect('/projects')
+  })
+)
+```
+
+### Invalidate by Prefix
+
+Delete all cache keys matching a prefix:
+
+```typescript
+import { cacheInvalidatePrefix } from 'honertia/effect'
+
+// Invalidate all caches for a user
+yield* cacheInvalidatePrefix(`user:${userId}:`)
+
+// Invalidate all project-related caches
+yield* cacheInvalidatePrefix('projects:')
+```
+
+### Manual Get/Set
+
+For more control over cache operations:
+
+```typescript
+import { Effect, Option, Schema as S, Duration } from 'effect'
+import { cacheGet, cacheSet } from 'honertia/effect'
+
+const UserSchema = S.Struct({
+  id: S.String,
+  name: S.String,
+  email: S.String,
+})
+
+// Check cache first
+const cached = yield* cacheGet(`user:${id}`, UserSchema)
+
+if (Option.isSome(cached)) {
+  return cached.value
+}
+
+// Compute value
+const user = yield* fetchUser(id)
+
+// Store in cache
+yield* cacheSet(`user:${id}`, user, UserSchema, Duration.hours(1))
+
+return user
+```
+
+### Using CacheService Directly
+
+For advanced use cases, access the underlying service:
+
+```typescript
+import { Effect } from 'effect'
+import { CacheService } from 'honertia/effect'
+
+const handler = action(
+  Effect.gen(function* () {
+    const cache = yield* CacheService
+
+    // Raw get (returns string | null)
+    const raw = yield* cache.get('my-key')
+
+    // Raw put
+    yield* cache.put('my-key', JSON.stringify({ data: 'value' }), {
+      expirationTtl: 3600, // seconds
+    })
+
+    // Delete
+    yield* cache.delete('my-key')
+
+    // List keys by prefix
+    const keys = yield* cache.list({ prefix: 'user:' })
+  })
+)
+```
+
+### Custom Cache Implementation
+
+Swap out Cloudflare KV for Redis or any other backend by providing a custom `CacheService` layer:
+
+```typescript
+import { Effect, Layer } from 'effect'
+import { CacheService, CacheClientError, type CacheClient } from 'honertia/effect'
+import { createClient } from 'redis'
+
+const createRedisCacheClient = (redisUrl: string): CacheClient => {
+  const client = createClient({ url: redisUrl })
+
+  return {
+    get: (key) =>
+      Effect.tryPromise({
+        try: () => client.get(key),
+        catch: (e) => new CacheClientError('Redis get failed', e),
+      }),
+    put: (key, value, options) =>
+      Effect.tryPromise({
+        try: () =>
+          client.set(key, value, options?.expirationTtl ? { EX: options.expirationTtl } : undefined),
+        catch: (e) => new CacheClientError('Redis set failed', e),
+      }).pipe(Effect.asVoid),
+    delete: (key) =>
+      Effect.tryPromise({
+        try: () => client.del(key),
+        catch: (e) => new CacheClientError('Redis delete failed', e),
+      }).pipe(Effect.asVoid),
+    list: (options) =>
+      Effect.tryPromise({
+        try: async () => {
+          const keys = await client.keys(options?.prefix ? `${options.prefix}*` : '*')
+          return { keys: keys.map((name) => ({ name })) }
+        },
+        catch: (e) => new CacheClientError('Redis keys failed', e),
+      }),
+  }
+}
+
+// Provide in your app setup
+const RedisCacheLayer = Layer.succeed(
+  CacheService,
+  createRedisCacheClient(process.env.REDIS_URL!)
+)
+```
+
+### Testing with Cache
+
+Create a test layer that uses an in-memory store:
+
+```typescript
+import { Effect, Layer, Option, Schema as S, Duration } from 'effect'
+import { CacheService, cache, cacheGet, cacheInvalidate, type CacheClient } from 'honertia/effect'
+import { describe, it, expect } from 'bun:test'
+
+const makeTestCache = (): Layer.Layer<CacheService> => {
+  const store = new Map<string, { value: string; expiresAt: number }>()
+
+  const client: CacheClient = {
+    get: (key) =>
+      Effect.sync(() => {
+        const entry = store.get(key)
+        if (!entry || entry.expiresAt < Date.now()) {
+          store.delete(key)
+          return null
+        }
+        return entry.value
+      }),
+    put: (key, value, options) =>
+      Effect.sync(() => {
+        const ttlMs = (options?.expirationTtl ?? 3600) * 1000
+        store.set(key, { value, expiresAt: Date.now() + ttlMs })
+      }),
+    delete: (key) =>
+      Effect.sync(() => {
+        store.delete(key)
+      }),
+    list: (options) =>
+      Effect.sync(() => ({
+        keys: [...store.keys()]
+          .filter((k) => !options?.prefix || k.startsWith(options.prefix))
+          .map((name) => ({ name })),
+      })),
+  }
+
+  return Layer.succeed(CacheService, client)
+}
+
+const TestSchema = S.Struct({
+  id: S.String,
+  name: S.String,
+})
+
+describe('cache', () => {
+  it('returns cached value on second call', () =>
+    Effect.gen(function* () {
+      let callCount = 0
+
+      const compute = Effect.sync(() => {
+        callCount++
+        return { id: '1', name: 'Test' }
+      })
+
+      const first = yield* cache('test:1', compute, TestSchema, Duration.hours(1))
+      const second = yield* cache('test:1', compute, TestSchema, Duration.hours(1))
+
+      expect(first).toEqual(second)
+      expect(callCount).toBe(1) // Only computed once
+    }).pipe(Effect.provide(makeTestCache()), Effect.runPromise))
+
+  it('recomputes after invalidation', () =>
+    Effect.gen(function* () {
+      let callCount = 0
+
+      const compute = Effect.sync(() => {
+        callCount++
+        return { id: '1', name: `Call ${callCount}` }
+      })
+
+      yield* cache('test:1', compute, TestSchema, Duration.hours(1))
+      yield* cacheInvalidate('test:1')
+      yield* cache('test:1', compute, TestSchema, Duration.hours(1))
+
+      expect(callCount).toBe(2) // Computed twice
+    }).pipe(Effect.provide(makeTestCache()), Effect.runPromise))
+
+  it('returns Option.none for missing keys', () =>
+    Effect.gen(function* () {
+      const result = yield* cacheGet('nonexistent', TestSchema)
+      expect(Option.isNone(result)).toBe(true)
+    }).pipe(Effect.provide(makeTestCache()), Effect.runPromise))
+})
+```
+
+### Cache Key Patterns
+
+Recommended cache key patterns:
+
+```typescript
+// User-scoped data
+`user:${userId}:profile`
+`user:${userId}:settings`
+`user:${userId}:notifications`
+
+// Resource lists
+`projects:user:${userId}`
+`posts:category:${categoryId}`
+
+// Individual resources
+`project:${projectId}`
+`user:${userId}`
+
+// Computed data
+`stats:daily:${date}`
+`leaderboard:weekly`
+
+// API responses
+`api:weather:${city}`
+`api:exchange:${currency}`
+```
+
+---
+
 ## Services Reference
 
 | Service | Description | Usage |
@@ -1540,6 +1920,7 @@ return yield* httpError(429, 'Rate limited')
 | `AuthService` | Better-auth instance | `const auth = yield* AuthService` |
 | `AuthUserService` | Current user session | `const user = yield* AuthUserService` |
 | `BindingsService` | Cloudflare bindings | `const { KV } = yield* BindingsService` |
+| `CacheService` | KV-backed cache client | `const cache = yield* CacheService` |
 | `RequestService` | Request context | `const req = yield* RequestService` |
 
 ### Using BindingsService

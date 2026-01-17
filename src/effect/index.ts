@@ -14,11 +14,14 @@ export {
   RequestService,
   ResponseFactoryService,
   BindingsService,
+  CacheService,
+  CacheClientError,
   type AuthUser,
   type EmailClient,
   type HonertiaRenderer,
   type RequestContext,
   type ResponseFactory,
+  type CacheClient,
   type HonertiaDatabaseType,
   type HonertiaAuthType,
   type HonertiaBindingsType,
@@ -232,6 +235,16 @@ export {
   type ParsedBinding,
   type BoundModel,
 } from './binding.js'
+
+// Cache
+export {
+  CacheError,
+  cache,
+  cacheGet,
+  cacheSet,
+  cacheInvalidate,
+  cacheInvalidatePrefix,
+} from '../cache.js'
 
 // Auth
 export {
