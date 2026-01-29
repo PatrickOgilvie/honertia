@@ -213,10 +213,16 @@ export interface DefaultAuthUser {
  */
 export type AuthUser = HonertiaAuthUserType extends { type: infer T } ? T : DefaultAuthUser
 
-export class AuthUserService extends Context.Tag('honertia/AuthUser')<
+/**
+ * Authenticated User Service - Provides the current user session
+ */
+const AuthUserService_base: Context.TagClass<
   AuthUserService,
+  'honertia/AuthUser',
   AuthUser
->() {}
+> = Context.Tag('honertia/AuthUser')<AuthUserService, AuthUser>()
+
+export class AuthUserService extends AuthUserService_base {}
 
 /**
  * Email Service - Outbound email delivery
