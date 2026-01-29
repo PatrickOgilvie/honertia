@@ -250,6 +250,7 @@ export {
 export {
   RequireAuthLayer,
   RequireGuestLayer,
+  createGuestLayer,
   isAuthenticated,
   currentUser,
   requireAuth,

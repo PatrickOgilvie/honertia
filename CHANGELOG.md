@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.36] - 2026-01-29
+
+### Added
+
+- **`createGuestLayer` factory function**: Create custom guest layers with predicates to allow certain authenticated users (e.g., anonymous users) to access guest-only pages like login/register for account upgrades.
+  ```typescript
+  import { createGuestLayer, effectAuthRoutes } from 'honertia/effect'
+
+  // Allow anonymous users to access login/register to upgrade accounts
+  const AllowAnonymousGuestLayer = createGuestLayer(
+    (authUser) => authUser.user.isAnonymous === true
+  )
+
+  effectAuthRoutes(app, {
+    guestLayer: AllowAnonymousGuestLayer,
+    loginComponent: 'Auth/Login',
+    registerComponent: 'Auth/Register',
+  })
+  ```
+
+- **`guestLayer` option in `effectAuthRoutes`**: Replace the default `RequireGuestLayer` with a custom layer for guest-only routes (login, register, guestActions). This enables anonymous user upgrade flows with Better Auth's anonymous plugin.
+
+## [0.1.35] - 2026-01-29
+
+### Added
+
+- **`.middleware()` method on `EffectRouteBuilder`**: Allows adding Hono middleware that runs before the Effect handler. Use this for middleware that needs to redirect or short-circuit requests before the Effect computation runs (e.g., auth redirects for anonymous sessions, rate limiting).
+  ```typescript
+  effectRoutes(app)
+    .middleware(ensureAuthMiddleware)  // Runs first, can redirect
+    .provide(RequireAuthLayer)         // Provides services within Effect
+    .group((route) => {
+      route.get('/article/{article:slug}', showArticle)
+    })
+  ```
+  This solves the architectural gap where Hono middleware (for flow control like redirects) needed to be registered separately from Effect layers (for dependency injection).
+
 ## [0.1.34] - 2026-01-29
 
 ### Added

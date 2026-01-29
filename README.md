@@ -1423,6 +1423,75 @@ effectRoutes(app)
   })
 ```
 
+### Custom Guest Layers (Anonymous Users)
+
+When using Better Auth's anonymous plugin, you may want anonymous users to access login/register pages to upgrade their accounts. By default, `RequireGuestLayer` blocks ALL authenticated users, including anonymous ones.
+
+Use `createGuestLayer` to create a custom guest layer with a predicate:
+
+```typescript
+import { createGuestLayer, effectAuthRoutes } from 'honertia/effect'
+
+// Allow anonymous users to access guest pages
+const AllowAnonymousGuestLayer = createGuestLayer(
+  (authUser) => authUser.user.isAnonymous === true  // Returns true if user should be allowed
+)
+
+// Use with effectAuthRoutes
+effectAuthRoutes(app, {
+  guestLayer: AllowAnonymousGuestLayer,
+  loginComponent: 'Auth/Login',
+  registerComponent: 'Auth/Register',
+  loginAction: loginUser,
+  registerAction: registerUser,
+})
+
+// Or use directly with effectRoutes
+effectRoutes(app)
+  .provide(AllowAnonymousGuestLayer)
+  .group((route) => {
+    route.get('/login', showLogin)
+    route.get('/register', showRegister)
+  })
+```
+
+The predicate receives the full `AuthUser` object and returns `true` if the user should be allowed through (treated as a "guest" for this route).
+
+### Scoped Middleware
+
+Use `.middleware()` to add Hono middleware to a specific route group. Unlike `app.use()` which applies globally, `.middleware()` scopes middleware to only the routes in that builder chain.
+
+```typescript
+import { effectRoutes, RequireAuthLayer } from 'honertia/effect'
+
+// Middleware that ensures anonymous auth (redirects to create session if none exists)
+effectRoutes(app)
+  .middleware(ensureAuthMiddleware)  // Hono middleware - can redirect
+  .provide(RequireAuthLayer)          // Effect layer - provides AuthUserService
+  .prefix('/play')
+  .group((route) => {
+    route.get('/{gamemode:slug}', showGamePage)
+  })
+
+// Different middleware for different route groups
+effectRoutes(app)
+  .middleware(rateLimitMiddleware)
+  .prefix('/api')
+  .group((route) => {
+    route.get('/stats', getStats)
+  })
+```
+
+**Key differences:**
+- `.middleware()` adds Hono middleware that runs *before* the Effect handler (can redirect/short-circuit)
+- `.provide()` adds Effect layers that run *within* the Effect computation (dependency injection)
+
+| Level | Method | Scope |
+|-------|--------|-------|
+| `app.use('*', ...)` | Global | All routes |
+| `setupHonertia({ middleware: [...] })` | Global | All routes via config |
+| `effectRoutes(app).middleware(...)` | Builder | Routes in that chain only |
+
 ### Manual Auth Check in Action
 
 ```typescript

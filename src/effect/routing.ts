@@ -172,7 +172,8 @@ export class EffectRouteBuilder<
     private readonly layers: Layer.Layer<any, never, never>[] = [],
     private readonly pathPrefix: string = '',
     private readonly bridgeConfig?: EffectBridgeConfig<E, CustomServices>,
-    private readonly registry: RouteRegistry = getGlobalRegistry()
+    private readonly registry: RouteRegistry = getGlobalRegistry(),
+    private readonly middlewares: MiddlewareHandler<E>[] = []
   ) {}
 
   /**
@@ -187,7 +188,36 @@ export class EffectRouteBuilder<
       [...this.layers, layer as Layer.Layer<S, never, never>],
       this.pathPrefix,
       this.bridgeConfig,
-      this.registry
+      this.registry,
+      this.middlewares
+    )
+  }
+
+  /**
+   * Add Hono middleware that runs before the Effect handler.
+   * Use this for middleware that needs to redirect or short-circuit requests
+   * before the Effect computation runs (e.g., auth redirects, rate limiting).
+   *
+   * @example
+   * ```typescript
+   * effectRoutes(app)
+   *   .middleware(ensureAuthMiddleware)  // Can redirect before Effect runs
+   *   .provide(RequireAuthLayer)         // Provides services within Effect
+   *   .group((route) => {
+   *     route.get('/dashboard', showDashboard)
+   *   })
+   * ```
+   */
+  middleware(
+    ...handlers: MiddlewareHandler<E>[]
+  ): EffectRouteBuilder<E, ProvidedServices, CustomServices> {
+    return new EffectRouteBuilder(
+      this.app,
+      this.layers,
+      this.pathPrefix,
+      this.bridgeConfig,
+      this.registry,
+      [...this.middlewares, ...handlers]
     )
   }
 
@@ -201,7 +231,8 @@ export class EffectRouteBuilder<
       this.layers,
       this.pathPrefix + normalizedPath,
       this.bridgeConfig,
-      this.registry
+      this.registry,
+      this.middlewares
     )
   }
 
@@ -459,8 +490,18 @@ export class EffectRouteBuilder<
     }
     this.registry.register(metadata)
 
-    // Register with Hono
-    this.app[method](fullPath, this.createHandler(effect, bindings, options))
+    // Register with Hono - apply middlewares before the Effect handler
+    const handler = this.createHandler(effect, bindings, options)
+    if (this.middlewares.length > 0) {
+      // Use type assertion for dynamic method with spread middlewares
+      ;(this.app[method] as (path: string, ...handlers: MiddlewareHandler<E>[]) => void)(
+        fullPath,
+        ...this.middlewares,
+        handler
+      )
+    } else {
+      this.app[method](fullPath, handler)
+    }
   }
 
   /** Register a GET route. Supports Laravel-style route model binding: /projects/{project} */

@@ -44,6 +44,8 @@ export const RequireAuthLayer = Layer.effect(
  * Layer that requires no authenticated user (guest only).
  * Fails if a user is present, succeeds (as a no-op) if no user.
  *
+ * For more flexibility (e.g., allowing anonymous users), use `createGuestLayer`.
+ *
  * @example
  * effectRoutes(app)
  *   .provide(RequireGuestLayer)
@@ -65,6 +67,72 @@ export const RequireGuestLayer = Layer.effectDiscard(
     // Guest confirmed - no user present, succeed silently
   })
 )
+
+/**
+ * Create a custom guest layer with a predicate to allow certain authenticated users.
+ *
+ * This is useful when you have "semi-authenticated" users (like Better Auth's anonymous
+ * users) who should still be able to access guest pages like login/register to upgrade
+ * their accounts.
+ *
+ * The predicate receives the authenticated user and returns `true` if they should be
+ * allowed through (treated as a "guest" for this route), or `false` to block them.
+ *
+ * @param allowUser - Predicate that returns true if the user should be allowed access.
+ *                    Receives the full AuthUser object (user + session).
+ * @param redirectTo - Where to redirect blocked users (default: '/')
+ *
+ * @example
+ * // Allow anonymous users to access login/register pages
+ * const AllowAnonymousGuestLayer = createGuestLayer(
+ *   (authUser) => authUser.user.isAnonymous === true
+ * )
+ *
+ * effectRoutes(app)
+ *   .provide(AllowAnonymousGuestLayer)
+ *   .get('/login', showLogin)
+ *
+ * @example
+ * // Use with effectAuthRoutes for anonymous user upgrade flow
+ * effectAuthRoutes(app, {
+ *   guestLayer: createGuestLayer((authUser) => authUser.user.isAnonymous),
+ *   loginComponent: 'Auth/Login',
+ *   registerComponent: 'Auth/Register',
+ * })
+ *
+ * @example
+ * // Custom redirect for blocked users
+ * const GuestOrAnonymousLayer = createGuestLayer(
+ *   (authUser) => authUser.user.isAnonymous,
+ *   '/dashboard'  // Redirect fully authenticated users to dashboard
+ * )
+ */
+export function createGuestLayer(
+  allowUser: (authUser: AuthUser) => boolean,
+  redirectTo = '/'
+): Layer.Layer<never, UnauthorizedError, never> {
+  return Layer.effectDiscard(
+    Effect.gen(function* () {
+      const maybeUser = yield* Effect.serviceOption(AuthUserService)
+
+      if (Option.isSome(maybeUser)) {
+        const authUser = maybeUser.value
+        // Check if this user is allowed through
+        if (!allowUser(authUser)) {
+          return yield* Effect.fail(
+            new UnauthorizedError({
+              message: 'Already authenticated',
+              redirectTo,
+            })
+          )
+        }
+        // User is allowed (e.g., anonymous user) - continue
+      }
+
+      // No user or allowed user - succeed silently
+    })
+  )
+}
 
 /**
  * Check if user is authenticated without failing.
@@ -175,14 +243,30 @@ export interface AuthRoutesConfig<E extends Env> {
     credentials?: boolean
   }
   /**
+   * Custom layer for guest-only routes (login, register, guestActions).
+   *
+   * By default, uses `RequireGuestLayer` which blocks ALL authenticated users.
+   * Use `createGuestLayer` to allow certain users through (e.g., anonymous users
+   * who should be able to access login/register to upgrade their accounts).
+   *
+   * @example
+   * // Allow anonymous users to access login/register pages
+   * effectAuthRoutes(app, {
+   *   guestLayer: createGuestLayer((authUser) => authUser.user.isAnonymous),
+   *   loginComponent: 'Auth/Login',
+   *   registerComponent: 'Auth/Register',
+   * })
+   */
+  guestLayer?: Layer.Layer<never, UnauthorizedError, never>
+  /**
    * POST handler for login form submission.
-   * Automatically wrapped with RequireGuestLayer.
+   * Automatically wrapped with guestLayer (or RequireGuestLayer if not specified).
    * Use betterAuthFormAction to create this.
    */
   loginAction?: AuthActionEffect
   /**
    * POST handler for registration form submission.
-   * Automatically wrapped with RequireGuestLayer.
+   * Automatically wrapped with guestLayer (or RequireGuestLayer if not specified).
    * Use betterAuthFormAction to create this.
    */
   registerAction?: AuthActionEffect
@@ -195,7 +279,7 @@ export interface AuthRoutesConfig<E extends Env> {
   /**
    * Additional guest-only POST routes for extended auth flows.
    * Keys are paths (e.g., '/forgot-password'), values are Effect handlers.
-   * All routes are wrapped with RequireGuestLayer.
+   * All routes are wrapped with guestLayer (or RequireGuestLayer if not specified).
    *
    * @example
    * guestActions: {
@@ -233,38 +317,28 @@ export function effectAuthRoutes<E extends Env>(
     registerComponent = 'Auth/Register',
   } = config
 
+  // Use custom guestLayer or create default that respects loginRedirect
+  const guestLayer = config.guestLayer ?? createGuestLayer(() => false, loginRedirect)
+
   const routes = effectRoutes(app)
 
-  // Login page (guest only)
-  routes.get(
-    loginPath,
-    Effect.gen(function* () {
-      yield* requireGuest(loginRedirect)
-      return yield* render(loginComponent)
-    })
-  )
+  // Guest-only routes builder (login, register pages and actions)
+  const guestRoutes = routes.provide(guestLayer)
 
-  // Register page (guest only)
-  routes.get(
-    registerPath,
-    Effect.gen(function* () {
-      yield* requireGuest(loginRedirect)
-      return yield* render(registerComponent)
-    })
-  )
+  // Login page - uses custom guestLayer or RequireGuestLayer
+  guestRoutes.get(loginPath, render(loginComponent))
 
-  // Login action (POST) - guest only
+  // Register page - uses custom guestLayer or RequireGuestLayer
+  guestRoutes.get(registerPath, render(registerComponent))
+
+  // Login action (POST) - uses custom guestLayer
   if (config.loginAction) {
-    routes
-      .provide(RequireGuestLayer)
-      .post(loginPath, config.loginAction)
+    guestRoutes.post(loginPath, config.loginAction)
   }
 
-  // Register action (POST) - guest only
+  // Register action (POST) - uses custom guestLayer
   if (config.registerAction) {
-    routes
-      .provide(RequireGuestLayer)
-      .post(registerPath, config.registerAction)
+    guestRoutes.post(registerPath, config.registerAction)
   }
 
   // Logout (POST) - use provided action or default
@@ -299,7 +373,6 @@ export function effectAuthRoutes<E extends Env>(
 
   // Additional guest-only actions (2FA, forgot password, etc.)
   if (config.guestActions) {
-    const guestRoutes = routes.provide(RequireGuestLayer)
     for (const [path, action] of Object.entries(config.guestActions)) {
       guestRoutes.post(path, action)
     }
