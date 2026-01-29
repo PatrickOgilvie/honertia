@@ -284,7 +284,11 @@ export class EffectRouteBuilder<
         return c.notFound() as Response
       }
 
-      type QueryBuilder = { where: (c: unknown) => QueryBuilder; get: () => Promise<unknown> }
+      // QueryBuilder type compatible with all Drizzle databases (PostgreSQL, MySQL, SQLite)
+      type QueryBuilder = {
+        where: (c: unknown) => QueryBuilder
+        limit: (n: number) => PromiseLike<unknown[]>
+      }
       const dbClient = db as { select: () => { from: (t: unknown) => QueryBuilder } }
       let query: QueryBuilder = dbClient.select().from(table).where(eq(column as Parameters<typeof eq>[0], paramValue))
 
@@ -299,8 +303,10 @@ export class EffectRouteBuilder<
         }
       }
 
-      // Execute the query
-      const result = await query.get()
+      // Execute the query - use .limit(1) for cross-database compatibility
+      // (PostgreSQL/MySQL don't have .get(), only SQLite does)
+      const results = await query.limit(1)
+      const result = results[0]
 
       if (!result) {
         return c.notFound() as Response

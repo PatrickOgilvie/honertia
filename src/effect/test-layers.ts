@@ -79,6 +79,14 @@ function createMockDb() {
             }
             return builder
           },
+          // Cross-database compatible: returns array, use [0] for single row
+          limit: async (n: number) => {
+            const values = Array.from(store.values())
+            const currentPredicate = predicate
+            const filtered = currentPredicate ? values.filter((row) => currentPredicate(row)) : values
+            return filtered.slice(0, n)
+          },
+          // Legacy SQLite-style method (kept for backwards compatibility)
           get: async () => {
             const values = Array.from(store.values())
             const currentPredicate = predicate

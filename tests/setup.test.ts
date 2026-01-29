@@ -148,12 +148,12 @@ describe('setupHonertia schema configuration', () => {
   test('schema is available to effectRoutes via context', async () => {
     const app = new Hono<TestEnv>()
 
-    // Mock drizzle-style db
+    // Mock drizzle-style db (cross-database compatible pattern)
     const mockDb = {
       select: () => ({
         from: () => ({
           where: () => ({
-            get: async () => ({ id: '123', name: 'Test Project' }),
+            limit: async () => [{ id: '123', name: 'Test Project' }],
           }),
         }),
       }),
@@ -509,7 +509,7 @@ describe('setupHonertia integration with effectRoutes', () => {
       select: () => ({
         from: () => ({
           where: () => ({
-            get: async () => ({ id: '1', title: 'Test Task' }),
+            limit: async () => [{ id: '1', title: 'Test Task' }],
           }),
         }),
       }),
@@ -555,15 +555,15 @@ describe('setupHonertia integration with effectRoutes', () => {
       select: () => ({
         from: (table: any) => ({
           where: () => ({
-            get: async () => {
+            limit: async () => {
               queryCount++
               if (table === mockSchema.projects) {
-                return { id: '1', name: 'Project A' }
+                return [{ id: '1', name: 'Project A' }]
               }
               if (table === mockSchema.users) {
-                return { id: '2', email: 'test@example.com' }
+                return [{ id: '2', email: 'test@example.com' }]
               }
-              return null
+              return []
             },
           }),
         }),
@@ -628,7 +628,7 @@ describe('setupHonertia full configuration', () => {
       select: () => ({
         from: () => ({
           where: () => ({
-            get: async () => ({ id: '1', ownerId: 'user-1' }),
+            limit: async () => [{ id: '1', ownerId: 'user-1' }],
           }),
         }),
       }),
