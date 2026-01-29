@@ -6,13 +6,13 @@ import { describe, test, expect } from 'bun:test'
 import { Effect, Schema as S, Layer, Exit, Cause } from 'effect'
 import {
   action,
-  authorize,
   dbTransaction,
 } from '../../src/effect/action.js'
 import {
   DatabaseService,
   AuthUserService,
   RequestService,
+  authorize,
   type AuthUser,
   type RequestContext,
 } from '../../src/effect/services.js'

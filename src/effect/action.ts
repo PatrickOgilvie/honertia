@@ -5,12 +5,8 @@
  * Actions are fully opt-in - yield* only what you need.
  */
 
-import { Effect, Option } from 'effect'
-import {
-  AuthUserService,
-  type AuthUser,
-} from './services.js'
-import { UnauthorizedError, ForbiddenError, Redirect } from './errors.js'
+import { Effect } from 'effect'
+import { Redirect } from './errors.js'
 import { type Validated, type Trusted } from './validation.js'
 
 /**
@@ -42,48 +38,6 @@ export function action<R, E>(
   handler: Effect.Effect<Response | Redirect, E, R>
 ): Effect.Effect<Response | Redirect, E, R> {
   return handler
-}
-
-/**
- * Authorization helper - opt-in to auth check.
- *
- * Returns the authenticated user if authorized.
- * Fails with UnauthorizedError if no user is present.
- * Fails with ForbiddenError if the check returns false.
- * The check function is optional - if not provided, just requires authentication.
- *
- * @example
- * // Just require authentication
- * const auth = yield* authorize()
- *
- * // Require specific role (if your user type has a role field)
- * const auth = yield* authorize((a) => a.user.role === 'admin')
- *
- * // Require resource ownership
- * const auth = yield* authorize((a) => a.user.id === project.userId)
- */
-export function authorize(
-  check?: (user: AuthUser) => boolean
-): Effect.Effect<AuthUser, UnauthorizedError | ForbiddenError, never> {
-  return Effect.gen(function* () {
-    const maybeUser = yield* Effect.serviceOption(AuthUserService)
-    if (Option.isNone(maybeUser)) {
-      return yield* Effect.fail(
-        new UnauthorizedError({
-          message: 'Authentication required',
-          redirectTo: '/login',
-        })
-      )
-    }
-
-    const user = maybeUser.value
-    if (check && !check(user)) {
-      return yield* Effect.fail(
-        new ForbiddenError({ message: 'Not authorized' })
-      )
-    }
-    return user
-  })
 }
 
 /**

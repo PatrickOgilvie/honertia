@@ -16,6 +16,7 @@ export {
   BindingsService,
   CacheService,
   CacheClientError,
+  authorize,
   type AuthUser,
   type EmailClient,
   type HonertiaRenderer,
@@ -25,6 +26,8 @@ export {
   type HonertiaDatabaseType,
   type HonertiaAuthType,
   type HonertiaBindingsType,
+  type HonertiaAuthUserType,
+  type DefaultAuthUser,
   type DatabaseType,
   type SchemaType,
   type AuthType,
@@ -160,7 +163,6 @@ export {
 // Action Composables
 export {
   action,
-  authorize,
   dbMutation,
   dbTransaction,
   type SafeTx,

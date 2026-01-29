@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.37] - 2026-01-29
+
+### Fixed
+
+- **Module augmentation for `HonertiaAuthUserType` now works correctly with `authorize()`**: Previously, `authorize()` was defined in `action.ts` which imported `AuthUser` from `services.ts`. TypeScript resolved the type when processing `action.d.ts`, before user module augmentation was applied. Now `authorize()` is defined in `services.ts` alongside the `AuthUser` type, ensuring custom auth user types are correctly inferred.
+
 ## [0.1.36] - 2026-01-29
 
 ### Added
