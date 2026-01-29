@@ -6,7 +6,7 @@
 
 import { Effect, Layer, Option, Schema as S } from 'effect'
 import type { Hono, MiddlewareHandler, Env } from 'hono'
-import { AuthUserService, AuthService, HonertiaService, RequestService, type AuthUser } from './services.js'
+import { AuthUserService, AuthService, DatabaseService, HonertiaService, RequestService, type AuthUser } from './services.js'
 import { UnauthorizedError, ValidationError } from './errors.js'
 import { effectRoutes, type EffectHandler } from './routing.js'
 import { render } from './responses.js'
@@ -214,7 +214,7 @@ export function shareAuthMiddleware<E extends Env>(): MiddlewareHandler<E> {
  * return, and effectAuthRoutes provides these services automatically.
  */
 export type AuthActionEffect<
-  R = RequestService | AuthService,
+  R = RequestService | AuthService | DatabaseService,
   E extends Error = Error
 > = EffectHandler<R, E>
 

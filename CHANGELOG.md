@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.38] - 2026-01-29
+
+### Changed
+
+- **`AuthActionEffect` now includes `DatabaseService`**: Auth actions passed to `effectAuthRoutes` (loginAction, registerAction, logoutAction, guestActions) can now use `DatabaseService` without type errors. This enables common patterns like migrating anonymous user data during login.
+
 ## [0.1.37] - 2026-01-29
 
 ### Fixed
