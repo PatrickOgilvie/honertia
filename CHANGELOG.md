@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.33] - 2026-01-29
+
+### Fixed
+
+- **Route model binding now works with PostgreSQL and MySQL**: Previously, route model binding used the SQLite-specific `.get()` method which doesn't exist in PostgreSQL or MySQL Drizzle drivers. Now uses the cross-database `.limit(1)` pattern that works with all Drizzle-supported databases.
+
 ## [0.1.32] - 2026-01-17
 
 ### Added
