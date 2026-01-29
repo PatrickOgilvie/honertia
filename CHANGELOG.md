@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.34] - 2026-01-29
+
+### Added
+
+- **`HonertiaAuthUserType` augmentable interface**: Allows customizing the `AuthUser` type returned by `authorize()` and other auth functions via module augmentation. This enables typed access to custom user fields (like `isAnonymous`, `isAdmin`, `role`) without casting.
+  ```typescript
+  // In your types.d.ts
+  declare module 'honertia/effect' {
+    interface HonertiaAuthUserType {
+      type: AuthUser // Your custom auth user type
+    }
+  }
+
+  // Then use without casting
+  const { user } = yield* authorize()
+  user.isAnonymous // typed correctly
+  ```
+- **`DefaultAuthUser` interface**: The standard Better Auth user/session structure, now exported as a named interface for reference
+
 ## [0.1.33] - 2026-01-29
 
 ### Fixed

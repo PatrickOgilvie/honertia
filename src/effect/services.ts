@@ -158,9 +158,36 @@ const BindingsService_base: Context.TagClass<
 export class BindingsService extends BindingsService_base {}
 
 /**
- * Authenticated User - Session with user data
+ * Augmentable interface for custom auth user type.
+ * Users can extend this via module augmentation to use their own AuthUser type
+ * (e.g., with custom fields like isAnonymous, isAdmin, role, etc.):
+ *
+ * @example
+ * ```typescript
+ * // In your project's types.d.ts
+ * import type { AuthUser as BetterAuthUser } from './auth' // Your custom auth user type
+ *
+ * declare module 'honertia/effect' {
+ *   interface HonertiaAuthUserType {
+ *     type: BetterAuthUser // Your auth user type with custom fields
+ *   }
+ * }
+ * ```
+ *
+ * Then authorize() and other auth functions will return your custom type:
+ * ```typescript
+ * const { user } = yield* authorize()
+ * // user.isAnonymous, user.role, etc. are now typed correctly
+ * ```
  */
-export interface AuthUser {
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface HonertiaAuthUserType {}
+
+/**
+ * Default auth user structure - used when HonertiaAuthUserType is not configured.
+ * Provides the standard Better Auth user and session shape.
+ */
+export interface DefaultAuthUser {
   user: {
     id: string
     email: string
@@ -179,6 +206,12 @@ export interface AuthUser {
     updatedAt: Date
   }
 }
+
+/**
+ * Authenticated User - Session with user data.
+ * Uses custom type if HonertiaAuthUserType is configured, otherwise uses DefaultAuthUser.
+ */
+export type AuthUser = HonertiaAuthUserType extends { type: infer T } ? T : DefaultAuthUser
 
 export class AuthUserService extends Context.Tag('honertia/AuthUser')<
   AuthUserService,
