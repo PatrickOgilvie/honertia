@@ -8,6 +8,7 @@ import { sqliteTable, text } from 'drizzle-orm/sqlite-core'
 import {
   DatabaseService,
   AuthService,
+  AuthUserService,
   bound,
   pluralize,
   asValidated,
@@ -17,6 +18,8 @@ import {
   type DatabaseType,
   type SchemaType,
   type AuthType,
+  type AuthUser,
+  type DefaultAuthUser,
   type BoundModel,
   type Validated,
   type Trusted,
@@ -52,6 +55,30 @@ const schema = { projects, categories }
 type Project = typeof projects.$inferSelect
 type Category = typeof categories.$inferSelect
 
+// Custom auth user type for testing HonertiaAuthUserType augmentation
+interface CustomAuthUser {
+  user: {
+    id: string
+    email: string
+    name: string | null
+    emailVerified: boolean
+    image: string | null
+    createdAt: Date
+    updatedAt: Date
+    // Custom fields from Better Auth plugins
+    isAnonymous: boolean
+    role: 'admin' | 'user'
+  }
+  session: {
+    id: string
+    userId: string
+    expiresAt: Date
+    token: string
+    createdAt: Date
+    updatedAt: Date
+  }
+}
+
 // Augment interfaces for testing
 declare module '../src/effect/index.js' {
   interface HonertiaDatabaseType {
@@ -60,6 +87,9 @@ declare module '../src/effect/index.js' {
   }
   interface HonertiaAuthType {
     type: { getSession: () => Promise<unknown> }
+  }
+  interface HonertiaAuthUserType {
+    type: CustomAuthUser
   }
 }
 
@@ -86,6 +116,16 @@ const _schemaType: AssertExtends<SchemaType, typeof schema> = true
 // AuthType resolves to augmented type
 const _authType: AssertExtends<AuthType, { getSession: () => Promise<unknown> }> = true
 
+// AuthUser resolves to augmented custom type (not DefaultAuthUser)
+const _authUserType: AssertExtends<AuthUser, CustomAuthUser> = true
+
+// AuthUser has custom fields from augmentation
+const _authUserHasCustomFields: AssertExtends<AuthUser, { user: { isAnonymous: boolean; role: 'admin' | 'user' } }> = true
+
+// DefaultAuthUser should NOT have custom fields (verifies it's the fallback)
+type DefaultHasCustomFields = DefaultAuthUser extends { user: { isAnonymous: boolean } } ? true : false
+const _defaultNoCustomFields: DefaultHasCustomFields = false
+
 // ============================================================================
 // Service Type Tests
 // ============================================================================
@@ -102,6 +142,18 @@ const _testAuthService = Effect.gen(function* () {
   const auth = yield* AuthService
   const _getSession: () => Promise<unknown> = auth.getSession
   return auth
+})
+
+// AuthUserService yields the augmented AuthUser type with custom fields
+const _testAuthUserService = Effect.gen(function* () {
+  const authUser = yield* AuthUserService
+  // Custom fields should be typed correctly
+  const _isAnonymous: boolean = authUser.user.isAnonymous
+  const _role: 'admin' | 'user' = authUser.user.role
+  // Standard fields still work
+  const _id: string = authUser.user.id
+  const _email: string = authUser.user.email
+  return authUser
 })
 
 // ============================================================================
@@ -247,11 +299,16 @@ describe('Effect type tests', () => {
     expect(_dbType).toBe(true)
     expect(_schemaType).toBe(true)
     expect(_authType).toBe(true)
+    // AuthUser augmentation assertions
+    expect(_authUserType).toBe(true)
+    expect(_authUserHasCustomFields).toBe(true)
+    expect(_defaultNoCustomFields).toBe(false)
   })
 
   test('effect generators are properly typed', () => {
     expect(_testDbService).toBeDefined()
     expect(_testAuthService).toBeDefined()
+    expect(_testAuthUserService).toBeDefined()
     expect(_testBound).toBeDefined()
     expect(_testBoundCategory).toBeDefined()
   })
