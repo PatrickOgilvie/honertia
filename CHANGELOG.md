@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.39] - 2026-01-30
+
+### Added
+
+- **`ExecutionContextService` for background task execution**: New service that wraps Cloudflare Workers' `waitUntil` API for running tasks after the response is sent. Provides both Effect-native `runInBackground(effect)` and raw `waitUntil(promise)` methods.
+  ```typescript
+  const ctx = yield* ExecutionContextService
+
+  // Run analytics in background
+  yield* ctx.runInBackground(
+    Effect.tryPromise(() => fetch('https://analytics.example.com/events', {
+      method: 'POST',
+      body: JSON.stringify({ event: 'page_view', userId })
+    }))
+  )
+  ```
+
+- **Stale-while-revalidate (SWR) support for cache**: The `cache()` function now supports an optional `swr` option that returns stale values immediately while triggering a background refresh via `ExecutionContextService`.
+  ```typescript
+  const user = yield* cache(
+    `user:${id}`,
+    fetchUser(id),
+    UserSchema,
+    {
+      ttl: Duration.hours(1),      // Fresh for 1 hour
+      swr: Duration.minutes(5),    // Serve stale for 5 more minutes while refreshing
+    }
+  )
+  ```
+
+### Changed
+
+- **Cache API now uses options object**: The `cache()` and `cacheSet()` functions now take an options object instead of a direct TTL parameter. This is a breaking change.
+  ```typescript
+  // Before
+  cache(key, compute, schema, Duration.hours(1))
+
+  // After
+  cache(key, compute, schema, { ttl: Duration.hours(1) })
+  ```
+
 ## [0.1.38] - 2026-01-29
 
 ### Changed

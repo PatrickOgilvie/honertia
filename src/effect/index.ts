@@ -16,6 +16,7 @@ export {
   BindingsService,
   CacheService,
   CacheClientError,
+  ExecutionContextService,
   authorize,
   type AuthUser,
   type EmailClient,
@@ -23,6 +24,7 @@ export {
   type RequestContext,
   type ResponseFactory,
   type CacheClient,
+  type ExecutionContextClient,
   type HonertiaDatabaseType,
   type HonertiaAuthType,
   type HonertiaBindingsType,
@@ -246,6 +248,7 @@ export {
   cacheSet,
   cacheInvalidate,
   cacheInvalidatePrefix,
+  type CacheOptions,
 } from '../cache.js'
 
 // Auth

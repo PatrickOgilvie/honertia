@@ -18,11 +18,13 @@ import {
   BindingsService,
   CacheService,
   CacheClientError,
+  ExecutionContextService,
   type AuthUser,
   type RequestContext,
   type ResponseFactory,
   type HonertiaRenderer,
   type CacheClient,
+  type ExecutionContextClient,
   type DatabaseType,
   type AuthType,
   type BindingsType,
@@ -233,6 +235,53 @@ function createUnconfiguredCacheClient(): CacheClient {
 }
 
 /**
+ * Cloudflare ExecutionContext interface (subset of the full API).
+ */
+interface CloudflareExecutionContext {
+  waitUntil(promise: Promise<unknown>): void
+  passThroughOnException(): void
+}
+
+/**
+ * Create an ExecutionContextClient from Cloudflare's ExecutionContext.
+ */
+function createExecutionContextClient(ctx: CloudflareExecutionContext): ExecutionContextClient {
+  return {
+    isAvailable: true,
+    waitUntil: (promise) => ctx.waitUntil(promise),
+    runInBackground: (effect) =>
+      Effect.flatMap(Effect.context<any>(), (context) =>
+        Effect.sync(() => {
+          const promise = Effect.runPromise(
+            effect.pipe(
+              Effect.provide(context),
+              Effect.catchAllCause((cause) => {
+                // Log errors but don't crash - this is background work
+                console.error('[Background Task Error]', cause)
+                return Effect.void
+              })
+            )
+          )
+          ctx.waitUntil(promise)
+        })
+      ),
+  }
+}
+
+/**
+ * Create a no-op ExecutionContextClient for environments without ExecutionContext.
+ */
+function createNoopExecutionContextClient(): ExecutionContextClient {
+  return {
+    isAvailable: false,
+    waitUntil: () => {
+      // No-op - silently ignore in non-Worker environments
+    },
+    runInBackground: () => Effect.void,
+  }
+}
+
+/**
  * Create a HonertiaRenderer from Hono context.
  */
 function createHonertiaRenderer<E extends Env>(c: HonoContext<E>): HonertiaRenderer {
@@ -266,6 +315,7 @@ export function buildContextLayer<E extends Env, CustomServices = never>(
   | AuthUserService
   | BindingsService
   | CacheService
+  | ExecutionContextService
   | CustomServices,
   never,
   never
@@ -313,6 +363,15 @@ export function buildContextLayer<E extends Env, CustomServices = never>(
       )) as AuthType
   )
 
+  // ExecutionContext layer - for background task execution
+  const executionCtx = (c as any).executionCtx as CloudflareExecutionContext | undefined
+  const executionContextLayer = Layer.succeed(
+    ExecutionContextService,
+    executionCtx
+      ? createExecutionContextClient(executionCtx)
+      : createNoopExecutionContextClient()
+  )
+
   let baseLayer = Layer.mergeAll(
     requestLayer,
     responseLayer,
@@ -320,7 +379,8 @@ export function buildContextLayer<E extends Env, CustomServices = never>(
     bindingsLayer,
     cacheLayer,
     databaseLayer,
-    authLayer
+    authLayer,
+    executionContextLayer
   )
 
   if ((c as any).var?.authUser) {
@@ -339,6 +399,7 @@ export function buildContextLayer<E extends Env, CustomServices = never>(
     | HonertiaService
     | BindingsService
     | CacheService
+    | ExecutionContextService
     | DatabaseService
     | AuthService
     | AuthUserService

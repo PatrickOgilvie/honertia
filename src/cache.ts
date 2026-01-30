@@ -4,10 +4,27 @@
  * Simple cache abstraction for storing expensive DB operations.
  * Uses CacheService which is automatically provided and backed by Cloudflare KV by default.
  * Can be swapped for Redis, Memcached, or any other implementation.
+ *
+ * Supports stale-while-revalidate (SWR) pattern for improved latency and resilience.
  */
 
 import { Effect, Option, Schema, ParseResult, Duration } from 'effect'
-import { CacheService, CacheClientError } from './effect/services.js'
+import { CacheService, CacheClientError, ExecutionContextService } from './effect/services.js'
+
+// ============================================================================
+// Types
+// ============================================================================
+
+export type CacheOptions = {
+  /** Time-to-live for cached values */
+  ttl: Duration.DurationInput
+  /**
+   * Stale-while-revalidate window. When set, stale values within this window
+   * are returned immediately while a background refresh is triggered.
+   * Without ExecutionContext, the refresh happens on the next request.
+   */
+  swr?: Duration.DurationInput
+}
 
 // ============================================================================
 // Errors
@@ -19,19 +36,42 @@ export class CacheError extends Schema.TaggedError<CacheError>()('CacheError', {
 }) {}
 
 // ============================================================================
+// Internal
+// ============================================================================
+
+/** Internal schema for storing value with metadata */
+const CacheEntrySchema = <V>(valueSchema: Schema.Schema<V>) =>
+  Schema.Struct({
+    v: valueSchema,
+    t: Schema.Number, // cachedAt timestamp
+  })
+
+type CacheEntry<V> = { v: V; t: number }
+
+// ============================================================================
 // Composable API
 // ============================================================================
 
 /**
  * Cache a computed value with automatic serialization and TTL.
+ * Supports stale-while-revalidate (SWR) for improved latency.
  *
  * @example
  * ```typescript
+ * // Basic usage
  * const user = yield* cache(
  *   `user:${id}`,
  *   Effect.tryPromise(() => db.query.users.findFirst({ where: eq(users.id, id) })),
  *   UserSchema,
- *   Duration.hours(1)
+ *   { ttl: Duration.hours(1) }
+ * )
+ *
+ * // With stale-while-revalidate
+ * const user = yield* cache(
+ *   `user:${id}`,
+ *   fetchUser(id),
+ *   UserSchema,
+ *   { ttl: Duration.hours(1), swr: Duration.minutes(5) }
  * )
  * ```
  */
@@ -39,26 +79,59 @@ export const cache = <V, E, R>(
   key: string,
   compute: Effect.Effect<V, E, R>,
   schema: Schema.Schema<V>,
-  ttl: Duration.DurationInput
-): Effect.Effect<V, E | CacheError | CacheClientError | ParseResult.ParseError, R | CacheService> =>
+  options: CacheOptions
+): Effect.Effect<V, E | CacheError | CacheClientError | ParseResult.ParseError, R | CacheService | ExecutionContextService> =>
   Effect.gen(function* () {
     const cacheService = yield* CacheService
+    const executionContext = yield* ExecutionContextService
+    const entrySchema = CacheEntrySchema(schema)
+    const jsonSchema = Schema.parseJson(entrySchema)
+
+    const ttlMs = Duration.toMillis(Duration.decode(options.ttl))
+    const swrMs = options.swr ? Duration.toMillis(Duration.decode(options.swr)) : 0
+    const totalTtlSeconds = Math.ceil((ttlMs + swrMs) / 1000)
+
+    // Helper to store a value in cache
+    const storeInCache = (value: V) =>
+      Effect.gen(function* () {
+        const newEntry: CacheEntry<V> = { v: value, t: Date.now() }
+        const serialized = yield* Schema.encode(jsonSchema)(newEntry)
+        yield* cacheService.put(key, serialized, { expirationTtl: totalTtlSeconds })
+      })
 
     // Check cache first
     const cached = yield* cacheService.get(key)
 
     if (cached !== null) {
-      return yield* Schema.decodeUnknown(Schema.parseJson(schema))(cached)
+      const entry = yield* Schema.decodeUnknown(jsonSchema)(cached)
+      const age = Date.now() - entry.t
+
+      if (age < ttlMs) {
+        // Fresh - return immediately
+        return entry.v
+      }
+
+      if (swrMs > 0 && age < ttlMs + swrMs) {
+        // Stale but within SWR window - return stale, trigger background refresh
+        if (executionContext.isAvailable) {
+          yield* executionContext.runInBackground(
+            Effect.gen(function* () {
+              const freshValue = yield* compute
+              yield* storeInCache(freshValue)
+            })
+          )
+        }
+        return entry.v
+      }
+
+      // Beyond SWR window - fall through to recompute
     }
 
-    // Compute value
+    // Compute value (cold cache or expired)
     const value = yield* compute
 
-    // Store in cache
-    const serialized = yield* Schema.encode(Schema.parseJson(schema))(value)
-    const ttlSeconds = Duration.toSeconds(Duration.decode(ttl))
-
-    yield* cacheService.put(key, serialized, { expirationTtl: ttlSeconds })
+    // Store with timestamp
+    yield* storeInCache(value)
 
     return value
   })
@@ -80,6 +153,8 @@ export const cacheGet = <V>(
 ): Effect.Effect<Option.Option<V>, CacheError | CacheClientError | ParseResult.ParseError, CacheService> =>
   Effect.gen(function* () {
     const cacheService = yield* CacheService
+    const entrySchema = CacheEntrySchema(schema)
+    const jsonSchema = Schema.parseJson(entrySchema)
 
     const cached = yield* cacheService.get(key)
 
@@ -87,8 +162,8 @@ export const cacheGet = <V>(
       return Option.none<V>()
     }
 
-    const decoded = yield* Schema.decodeUnknown(Schema.parseJson(schema))(cached)
-    return Option.some(decoded)
+    const entry = yield* Schema.decodeUnknown(jsonSchema)(cached)
+    return Option.some(entry.v)
   })
 
 /**
@@ -96,22 +171,28 @@ export const cacheGet = <V>(
  *
  * @example
  * ```typescript
- * yield* cacheSet(`user:${id}`, user, UserSchema, Duration.hours(1))
+ * yield* cacheSet(`user:${id}`, user, UserSchema, { ttl: Duration.hours(1) })
  * ```
  */
 export const cacheSet = <V>(
   key: string,
   value: V,
   schema: Schema.Schema<V>,
-  ttl: Duration.DurationInput
+  options: CacheOptions
 ): Effect.Effect<void, CacheError | CacheClientError | ParseResult.ParseError, CacheService> =>
   Effect.gen(function* () {
     const cacheService = yield* CacheService
+    const entrySchema = CacheEntrySchema(schema)
+    const jsonSchema = Schema.parseJson(entrySchema)
 
-    const serialized = yield* Schema.encode(Schema.parseJson(schema))(value)
-    const ttlSeconds = Duration.toSeconds(Duration.decode(ttl))
+    const ttlMs = Duration.toMillis(Duration.decode(options.ttl))
+    const swrMs = options.swr ? Duration.toMillis(Duration.decode(options.swr)) : 0
+    const totalTtlSeconds = Math.ceil((ttlMs + swrMs) / 1000)
 
-    yield* cacheService.put(key, serialized, { expirationTtl: ttlSeconds })
+    const entry: CacheEntry<V> = { v: value, t: Date.now() }
+    const serialized = yield* Schema.encode(jsonSchema)(entry)
+
+    yield* cacheService.put(key, serialized, { expirationTtl: totalTtlSeconds })
   })
 
 /**

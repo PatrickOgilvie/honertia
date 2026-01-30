@@ -335,6 +335,81 @@ export class CacheService extends Context.Tag('honertia/Cache')<
   CacheClient
 >() {}
 
+// ============================================================================
+// Execution Context Service
+// ============================================================================
+
+/**
+ * Client interface for background execution.
+ * Wraps Cloudflare's ExecutionContext with Effect-native methods.
+ *
+ * @example
+ * ```typescript
+ * const ctx = yield* ExecutionContextService
+ *
+ * // Effect-native: run an Effect in the background
+ * yield* ctx.runInBackground(
+ *   sendAnalyticsEvent({ userId, page: 'dashboard' })
+ * )
+ *
+ * // Raw API: for promises from external libraries
+ * ctx.waitUntil(externalLib.doSomething())
+ *
+ * // Check availability before optional background work
+ * if (ctx.isAvailable) {
+ *   yield* ctx.runInBackground(touchSession())
+ * }
+ * ```
+ */
+export interface ExecutionContextClient {
+  /**
+   * Whether background execution is available.
+   * False in tests or non-Worker environments.
+   */
+  readonly isAvailable: boolean
+
+  /**
+   * Run an Effect in the background after the response is sent.
+   * Errors are caught and logged - they won't crash the worker.
+   *
+   * The Effect's requirements (R) must be satisfied by the current context.
+   * Returns immediately - the actual work happens asynchronously.
+   */
+  runInBackground: <A, E, R>(
+    effect: Effect.Effect<A, E, R>
+  ) => Effect.Effect<void, never, R>
+
+  /**
+   * Raw waitUntil - extends worker lifetime for a Promise.
+   * Use this for promises from external libraries.
+   * No-op if background execution is unavailable.
+   */
+  waitUntil: (promise: Promise<unknown>) => void
+}
+
+/**
+ * Execution Context Service - Background task execution for Cloudflare Workers.
+ *
+ * Automatically provided by the Effect bridge. Uses Cloudflare's `waitUntil`
+ * to run work after the response is sent.
+ *
+ * @example
+ * ```typescript
+ * // In an action - send analytics without blocking response
+ * const ctx = yield* ExecutionContextService
+ * yield* ctx.runInBackground(
+ *   Effect.tryPromise(() => fetch('https://analytics.example.com/events', {
+ *     method: 'POST',
+ *     body: JSON.stringify({ event: 'page_view', userId })
+ *   }))
+ * )
+ * ```
+ */
+export class ExecutionContextService extends Context.Tag('honertia/ExecutionContext')<
+  ExecutionContextService,
+  ExecutionContextClient
+>() {}
+
 /**
  * Authorization helper - opt-in to auth check.
  *

@@ -824,7 +824,7 @@ export const listProjects = action(
         })
       ),
       S.Array(ProjectSchema),
-      Duration.minutes(5)
+      { ttl: Duration.minutes(5) }
     )
 
     return yield* render('Projects/Index', { projects: userProjects })
@@ -1676,7 +1676,7 @@ export const listProjects = action(
         catch: (error) => new Error(String(error)),
       }),
       S.Array(ProjectSchema),
-      Duration.minutes(5)
+      { ttl: Duration.minutes(5) }
     )
 
     return yield* render('Projects/Index', { projects: userProjects })
@@ -1688,11 +1688,18 @@ export const listProjects = action(
 
 | Function | Description |
 |----------|-------------|
-| `cache(key, compute, schema, ttl)` | Get from cache or compute and store |
+| `cache(key, compute, schema, options)` | Get from cache or compute and store |
 | `cacheGet(key, schema)` | Get value from cache (returns `Option`) |
-| `cacheSet(key, value, schema, ttl)` | Store value in cache |
+| `cacheSet(key, value, schema, options)` | Store value in cache |
 | `cacheInvalidate(key)` | Delete a single cache key |
 | `cacheInvalidatePrefix(prefix)` | Delete all keys with prefix |
+
+The `options` parameter is an object with the following properties:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `ttl` | `Duration.DurationInput` | Time-to-live for cached values (required) |
+| `swr` | `Duration.DurationInput` | Stale-while-revalidate window (optional) |
 
 ### Cache Invalidation
 
@@ -1783,7 +1790,7 @@ if (Option.isSome(cached)) {
 const user = yield* fetchUser(id)
 
 // Store in cache
-yield* cacheSet(`user:${id}`, user, UserSchema, Duration.hours(1))
+yield* cacheSet(`user:${id}`, user, UserSchema, { ttl: Duration.hours(1) })
 
 return user
 ```
@@ -1921,8 +1928,8 @@ describe('cache', () => {
         return { id: '1', name: 'Test' }
       })
 
-      const first = yield* cache('test:1', compute, TestSchema, Duration.hours(1))
-      const second = yield* cache('test:1', compute, TestSchema, Duration.hours(1))
+      const first = yield* cache('test:1', compute, TestSchema, { ttl: Duration.hours(1) })
+      const second = yield* cache('test:1', compute, TestSchema, { ttl: Duration.hours(1) })
 
       expect(first).toEqual(second)
       expect(callCount).toBe(1) // Only computed once
@@ -1937,9 +1944,9 @@ describe('cache', () => {
         return { id: '1', name: `Call ${callCount}` }
       })
 
-      yield* cache('test:1', compute, TestSchema, Duration.hours(1))
+      yield* cache('test:1', compute, TestSchema, { ttl: Duration.hours(1) })
       yield* cacheInvalidate('test:1')
-      yield* cache('test:1', compute, TestSchema, Duration.hours(1))
+      yield* cache('test:1', compute, TestSchema, { ttl: Duration.hours(1) })
 
       expect(callCount).toBe(2) // Computed twice
     }).pipe(Effect.provide(makeTestCache()), Effect.runPromise))
@@ -1979,6 +1986,208 @@ Recommended cache key patterns:
 `api:exchange:${currency}`
 ```
 
+### Stale-While-Revalidate (SWR)
+
+The cache supports the stale-while-revalidate pattern for improved latency and resilience. When enabled, stale values are returned immediately while a background refresh is triggered.
+
+```typescript
+import { Effect, Duration } from 'effect'
+import { cache, DatabaseService } from 'honertia/effect'
+
+const UserSchema = S.Struct({
+  id: S.String,
+  name: S.String,
+  email: S.String,
+})
+
+// Basic usage with TTL only
+const user = yield* cache(
+  `user:${id}`,
+  fetchUser(id),
+  UserSchema,
+  { ttl: Duration.hours(1) }
+)
+
+// With stale-while-revalidate
+const user = yield* cache(
+  `user:${id}`,
+  fetchUser(id),
+  UserSchema,
+  {
+    ttl: Duration.hours(1),      // Fresh for 1 hour
+    swr: Duration.minutes(5),    // Serve stale for 5 more minutes while refreshing
+  }
+)
+```
+
+**How SWR works:**
+
+| Cache State | Behavior |
+|-------------|----------|
+| Fresh (age < TTL) | Return cached value immediately |
+| Stale (TTL < age < TTL + SWR) | Return stale value immediately, trigger background refresh |
+| Expired (age > TTL + SWR) | Compute new value synchronously |
+| Cold (no cache) | Compute new value synchronously |
+
+**Benefits:**
+- **Faster responses**: Users always get an immediate response (stale or fresh)
+- **Reduced latency spikes**: No waiting for slow database queries during cache refresh
+- **Graceful degradation**: If the background refresh fails, stale data is still served
+
+**Real-world example:**
+
+```typescript
+import { Effect, Duration, Schema as S } from 'effect'
+import { action, authorize, cache, render, DatabaseService } from 'honertia/effect'
+import { eq } from 'drizzle-orm'
+import { projects } from '~/db/schema'
+
+const ProjectListSchema = S.Array(
+  S.Struct({
+    id: S.String,
+    name: S.String,
+    createdAt: S.Date,
+  })
+)
+
+export const indexProjects = action(
+  Effect.gen(function* () {
+    const auth = yield* authorize()
+    const db = yield* DatabaseService
+
+    // Cache project list with SWR
+    // - Fresh for 5 minutes
+    // - Serve stale for 1 additional minute while refreshing in background
+    const userProjects = yield* cache(
+      `projects:user:${auth.user.id}`,
+      Effect.tryPromise(() =>
+        db.query.projects.findMany({
+          where: eq(projects.userId, auth.user.id),
+          orderBy: (p, { desc }) => [desc(p.createdAt)],
+        })
+      ),
+      ProjectListSchema,
+      {
+        ttl: Duration.minutes(5),
+        swr: Duration.minutes(1),
+      }
+    )
+
+    return yield* render('Projects/Index', { projects: userProjects })
+  })
+)
+```
+
+### Background Tasks with ExecutionContextService
+
+The `ExecutionContextService` provides access to Cloudflare Workers' `waitUntil` API, allowing you to run tasks after the response is sent. This is automatically used by the cache's SWR feature for background refresh.
+
+```typescript
+import { Effect } from 'effect'
+import { action, ExecutionContextService, authorize, render } from 'honertia/effect'
+
+export const dashboard = action(
+  Effect.gen(function* () {
+    const auth = yield* authorize()
+    const ctx = yield* ExecutionContextService
+
+    // Send analytics in background - doesn't block response
+    yield* ctx.runInBackground(
+      Effect.tryPromise(() =>
+        fetch('https://analytics.example.com/events', {
+          method: 'POST',
+          body: JSON.stringify({
+            event: 'page_view',
+            userId: auth.user.id,
+            page: 'dashboard',
+            timestamp: Date.now(),
+          }),
+        })
+      )
+    )
+
+    return yield* render('Dashboard', { user: auth.user })
+  })
+)
+```
+
+**ExecutionContextService API:**
+
+| Method | Description |
+|--------|-------------|
+| `isAvailable` | `boolean` - Whether background execution is available |
+| `runInBackground(effect)` | Run an Effect after the response is sent |
+| `waitUntil(promise)` | Raw `waitUntil` for external promises |
+
+**Common use cases:**
+
+```typescript
+// Audit logging
+const auditLog = (action: string, details: Record<string, unknown>) =>
+  Effect.gen(function* () {
+    const ctx = yield* ExecutionContextService
+    const user = yield* authorize()
+    const db = yield* DatabaseService
+
+    yield* ctx.runInBackground(
+      Effect.tryPromise(() =>
+        db.insert(auditLogs).values({
+          userId: user.id,
+          action,
+          details,
+          timestamp: new Date(),
+        })
+      )
+    )
+  })
+
+// Webhook delivery with retries
+const deliverWebhook = (url: string, payload: unknown) =>
+  Effect.gen(function* () {
+    const ctx = yield* ExecutionContextService
+
+    yield* ctx.runInBackground(
+      Effect.tryPromise(() =>
+        fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+      ).pipe(
+        Effect.retry({ times: 3 }),
+        Effect.catchAll((error) =>
+          Effect.logError('Webhook delivery failed', { url, error })
+        )
+      )
+    )
+  })
+
+// Conditional background work
+const maybeNotifySlack = (message: string) =>
+  Effect.gen(function* () {
+    const ctx = yield* ExecutionContextService
+    const bindings = yield* BindingsService
+
+    // Only run if Slack is configured and background is available
+    if (bindings.SLACK_WEBHOOK_URL && ctx.isAvailable) {
+      yield* ctx.runInBackground(
+        Effect.tryPromise(() =>
+          fetch(bindings.SLACK_WEBHOOK_URL, {
+            method: 'POST',
+            body: JSON.stringify({ text: message }),
+          })
+        )
+      )
+    }
+  })
+```
+
+**Important notes:**
+- Background tasks run after the response is sent to the user
+- Errors in background tasks are logged but don't crash the worker
+- In non-Worker environments (tests, local dev), `isAvailable` is `false` and tasks are skipped
+- Use `catchAll` to handle errors gracefully in background tasks
+
 ---
 
 ## Services Reference
@@ -1990,6 +2199,7 @@ Recommended cache key patterns:
 | `AuthUserService` | Current user session | `const user = yield* AuthUserService` |
 | `BindingsService` | Cloudflare bindings | `const { KV } = yield* BindingsService` |
 | `CacheService` | KV-backed cache client | `const cache = yield* CacheService` |
+| `ExecutionContextService` | Background task execution | `const ctx = yield* ExecutionContextService` |
 | `RequestService` | Request context | `const req = yield* RequestService` |
 
 ### Using BindingsService
