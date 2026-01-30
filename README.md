@@ -2188,6 +2188,208 @@ const maybeNotifySlack = (message: string) =>
 - In non-Worker environments (tests, local dev), `isAvailable` is `false` and tasks are skipped
 - Use `catchAll` to handle errors gracefully in background tasks
 
+### Cache Key Versioning
+
+Cache versioning ensures cache correctness when your data schema changes. Without versioning, schema changes can cause decode errors or serve stale data with the wrong shape.
+
+**The Problem:**
+
+```typescript
+// Version 1 of your schema
+const UserSchemaV1 = S.Struct({
+  id: S.String,
+  name: S.String,
+  email: S.String,
+})
+
+// You deploy with cached data...
+
+// Version 2 adds a required field
+const UserSchemaV2 = S.Struct({
+  id: S.String,
+  name: S.String,
+  email: S.String,
+  avatar: S.String,  // New required field!
+})
+
+// Cached V1 data fails to decode with V2 schema → Runtime error
+```
+
+**Solution 1: Auto Schema Versioning (Recommended)**
+
+Pass `version: true` to automatically version cache keys based on a hash of the schema structure. When you change the schema, the hash changes, and old cached data is automatically bypassed.
+
+```typescript
+import { Effect, Duration, Schema as S } from 'effect'
+import { cache, DatabaseService } from 'honertia/effect'
+
+const UserSchema = S.Struct({
+  id: S.String,
+  name: S.String,
+  email: S.String,
+})
+
+// Cache key becomes "a1b2c3:user:123" (hash:key)
+const user = yield* cache(
+  `user:${id}`,
+  fetchUser(id),
+  UserSchema,
+  { ttl: Duration.hours(1), version: true }
+)
+```
+
+**When to use `version: true`:**
+- You want automatic cache invalidation when schemas evolve
+- You're iterating quickly on data structures during development
+- You want zero-downtime deployments without manual cache clearing
+
+**When NOT to use `version: true`:**
+- You need cache hits to survive deployments (use explicit versions instead)
+- Schema changes are intentionally backward-compatible
+- You're caching data that doesn't depend on schema structure
+
+**Solution 2: Explicit Version Strings**
+
+For more control, pass an explicit version string. Bump it manually when your schema changes.
+
+```typescript
+// Cache key becomes "v2:user:123"
+const user = yield* cache(
+  `user:${id}`,
+  fetchUser(id),
+  UserSchema,
+  { ttl: Duration.hours(1), version: 'v2' }
+)
+```
+
+**When to use explicit versions:**
+- You want cache hits to survive deployments
+- You need predictable cache keys for debugging
+- You're coordinating schema changes across services
+
+**Full Example: User Profile with Versioned Cache**
+
+```typescript
+import { Effect, Duration, Schema as S } from 'effect'
+import {
+  action,
+  authorize,
+  cache,
+  cacheInvalidate,
+  render,
+  redirect,
+  DatabaseService,
+  validateRequest,
+  dbMutation,
+} from 'honertia/effect'
+import { eq } from 'drizzle-orm'
+import { users } from '~/db/schema'
+
+// Schema definition - changing this auto-invalidates cache when version: true
+const UserProfileSchema = S.Struct({
+  id: S.String,
+  name: S.String,
+  email: S.String,
+  bio: S.NullOr(S.String),
+  avatarUrl: S.NullOr(S.String),
+})
+
+// GET /profile - cached with auto-versioning
+export const showProfile = action(
+  Effect.gen(function* () {
+    const auth = yield* authorize()
+    const db = yield* DatabaseService
+
+    const profile = yield* cache(
+      `user:profile:${auth.user.id}`,
+      Effect.tryPromise(() =>
+        db.query.users.findFirst({
+          where: eq(users.id, auth.user.id),
+          columns: { id: true, name: true, email: true, bio: true, avatarUrl: true },
+        })
+      ),
+      UserProfileSchema,
+      {
+        ttl: Duration.hours(1),
+        swr: Duration.minutes(5),
+        version: true,  // Auto-invalidates when UserProfileSchema changes
+      }
+    )
+
+    return yield* render('Profile/Show', { profile })
+  })
+)
+
+// PUT /profile - invalidate cache after update
+export const updateProfile = action(
+  Effect.gen(function* () {
+    const auth = yield* authorize()
+    const input = yield* validateRequest(UpdateProfileSchema, {
+      errorComponent: 'Profile/Edit',
+    })
+    const db = yield* DatabaseService
+
+    yield* dbMutation(db, async (db) => {
+      await db.update(users)
+        .set({ name: input.name, bio: input.bio })
+        .where(eq(users.id, auth.user.id))
+    })
+
+    // Invalidate with same versioning strategy
+    yield* cacheInvalidate(`user:profile:${auth.user.id}`, {
+      schema: UserProfileSchema,
+      version: true,
+    })
+
+    return yield* redirect('/profile')
+  })
+)
+```
+
+**Versioning with `cacheGet` and `cacheInvalidate`:**
+
+When using manual cache operations, pass the same version option:
+
+```typescript
+import { cacheGet, cacheSet, cacheInvalidate } from 'honertia/effect'
+
+// Get with auto-versioning
+const cached = yield* cacheGet(`user:${id}`, UserSchema, { version: true })
+
+// Set with explicit version
+yield* cacheSet(`user:${id}`, user, UserSchema, {
+  ttl: Duration.hours(1),
+  version: 'v2',
+})
+
+// Invalidate with versioning - requires schema when using version
+yield* cacheInvalidate(`user:${id}`, { schema: UserSchema, version: true })
+
+// Simple invalidation (no versioning)
+yield* cacheInvalidate(`user:${id}`)
+```
+
+**How Schema Hashing Works:**
+
+The auto-versioning feature uses the djb2 hash algorithm on the serialized schema AST:
+
+1. Schema structure is serialized to a string representation
+2. A fast, deterministic hash is computed (djb2)
+3. The hash is prepended to the cache key
+
+This means:
+- Same schema definition → same hash → cache hits work
+- Changed schema structure → different hash → cache miss, fresh data computed
+- Adding/removing fields, changing types, or modifying constraints all change the hash
+
+**Cache Options Reference:**
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `ttl` | `Duration.DurationInput` | Time-to-live for cached values (required) |
+| `swr` | `Duration.DurationInput` | Stale-while-revalidate window (optional) |
+| `version` | `string \| boolean` | `true` = auto schema hash, `string` = explicit prefix (optional) |
+
 ---
 
 ## Services Reference

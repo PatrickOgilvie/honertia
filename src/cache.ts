@@ -24,6 +24,22 @@ export type CacheOptions = {
    * Without ExecutionContext, the refresh happens on the next request.
    */
   swr?: Duration.DurationInput
+  /**
+   * Cache key versioning for safe schema migrations.
+   * - `string`: Explicit version prefix (e.g., 'v2')
+   * - `true`: Auto-generate version from schema hash
+   * - `false` or omitted: No versioning
+   */
+  version?: string | boolean
+}
+
+export type CacheGetOptions = {
+  /**
+   * Cache key versioning (must match what was used when caching).
+   * - `string`: Explicit version prefix
+   * - `true`: Auto-generate version from schema hash
+   */
+  version?: string | boolean
 }
 
 // ============================================================================
@@ -47,6 +63,46 @@ const CacheEntrySchema = <V>(valueSchema: Schema.Schema<V>) =>
   })
 
 type CacheEntry<V> = { v: V; t: number }
+
+/**
+ * Simple string hash function (djb2 algorithm).
+ * Produces a short, deterministic hash for cache key versioning.
+ */
+const hashString = (str: string): string => {
+  let hash = 5381
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) + hash) ^ str.charCodeAt(i)
+  }
+  // Convert to unsigned 32-bit and then to base36 for short strings
+  return (hash >>> 0).toString(36)
+}
+
+/**
+ * Generate a version string from a schema's AST.
+ * The hash changes when the schema structure changes.
+ */
+const hashSchema = <V>(schema: Schema.Schema<V>): string => {
+  // Stringify the AST - this captures the schema structure
+  const astString = JSON.stringify(schema.ast)
+  return hashString(astString)
+}
+
+/**
+ * Resolve the effective cache key with optional versioning.
+ */
+const resolveKey = <V>(
+  key: string,
+  schema: Schema.Schema<V>,
+  version: string | boolean | undefined
+): string => {
+  if (version === true) {
+    return `${hashSchema(schema)}:${key}`
+  }
+  if (typeof version === 'string') {
+    return `${version}:${key}`
+  }
+  return key
+}
 
 // ============================================================================
 // Composable API
@@ -73,6 +129,22 @@ type CacheEntry<V> = { v: V; t: number }
  *   UserSchema,
  *   { ttl: Duration.hours(1), swr: Duration.minutes(5) }
  * )
+ *
+ * // With auto schema versioning (cache auto-invalidates when schema changes)
+ * const user = yield* cache(
+ *   `user:${id}`,
+ *   fetchUser(id),
+ *   UserSchema,
+ *   { ttl: Duration.hours(1), version: true }
+ * )
+ *
+ * // With explicit version
+ * const user = yield* cache(
+ *   `user:${id}`,
+ *   fetchUser(id),
+ *   UserSchema,
+ *   { ttl: Duration.hours(1), version: 'v2' }
+ * )
  * ```
  */
 export const cache = <V, E, R>(
@@ -87,6 +159,7 @@ export const cache = <V, E, R>(
     const entrySchema = CacheEntrySchema(schema)
     const jsonSchema = Schema.parseJson(entrySchema)
 
+    const effectiveKey = resolveKey(key, schema, options.version)
     const ttlMs = Duration.toMillis(Duration.decode(options.ttl))
     const swrMs = options.swr ? Duration.toMillis(Duration.decode(options.swr)) : 0
     const totalTtlSeconds = Math.ceil((ttlMs + swrMs) / 1000)
@@ -96,11 +169,11 @@ export const cache = <V, E, R>(
       Effect.gen(function* () {
         const newEntry: CacheEntry<V> = { v: value, t: Date.now() }
         const serialized = yield* Schema.encode(jsonSchema)(newEntry)
-        yield* cacheService.put(key, serialized, { expirationTtl: totalTtlSeconds })
+        yield* cacheService.put(effectiveKey, serialized, { expirationTtl: totalTtlSeconds })
       })
 
     // Check cache first
-    const cached = yield* cacheService.get(key)
+    const cached = yield* cacheService.get(effectiveKey)
 
     if (cached !== null) {
       const entry = yield* Schema.decodeUnknown(jsonSchema)(cached)
@@ -145,18 +218,23 @@ export const cache = <V, E, R>(
  * if (Option.isSome(cached)) {
  *   return cached.value
  * }
+ *
+ * // With versioning (must match what was used when caching)
+ * const cached = yield* cacheGet(`user:${id}`, UserSchema, { version: true })
  * ```
  */
 export const cacheGet = <V>(
   key: string,
-  schema: Schema.Schema<V>
+  schema: Schema.Schema<V>,
+  options?: CacheGetOptions
 ): Effect.Effect<Option.Option<V>, CacheError | CacheClientError | ParseResult.ParseError, CacheService> =>
   Effect.gen(function* () {
     const cacheService = yield* CacheService
     const entrySchema = CacheEntrySchema(schema)
     const jsonSchema = Schema.parseJson(entrySchema)
 
-    const cached = yield* cacheService.get(key)
+    const effectiveKey = resolveKey(key, schema, options?.version)
+    const cached = yield* cacheService.get(effectiveKey)
 
     if (cached === null) {
       return Option.none<V>()
@@ -172,6 +250,9 @@ export const cacheGet = <V>(
  * @example
  * ```typescript
  * yield* cacheSet(`user:${id}`, user, UserSchema, { ttl: Duration.hours(1) })
+ *
+ * // With auto schema versioning
+ * yield* cacheSet(`user:${id}`, user, UserSchema, { ttl: Duration.hours(1), version: true })
  * ```
  */
 export const cacheSet = <V>(
@@ -185,6 +266,7 @@ export const cacheSet = <V>(
     const entrySchema = CacheEntrySchema(schema)
     const jsonSchema = Schema.parseJson(entrySchema)
 
+    const effectiveKey = resolveKey(key, schema, options.version)
     const ttlMs = Duration.toMillis(Duration.decode(options.ttl))
     const swrMs = options.swr ? Duration.toMillis(Duration.decode(options.swr)) : 0
     const totalTtlSeconds = Math.ceil((ttlMs + swrMs) / 1000)
@@ -192,23 +274,38 @@ export const cacheSet = <V>(
     const entry: CacheEntry<V> = { v: value, t: Date.now() }
     const serialized = yield* Schema.encode(jsonSchema)(entry)
 
-    yield* cacheService.put(key, serialized, { expirationTtl: totalTtlSeconds })
+    yield* cacheService.put(effectiveKey, serialized, { expirationTtl: totalTtlSeconds })
   })
+
+export type CacheInvalidateOptions<V> = {
+  /** Schema used when caching (required if version is set) */
+  schema: Schema.Schema<V>
+  /** Version option (must match what was used when caching) */
+  version: string | boolean
+}
 
 /**
  * Invalidate a cache key.
  *
  * @example
  * ```typescript
+ * // Simple invalidation
  * yield* cacheInvalidate(`user:${id}`)
+ *
+ * // Invalidate versioned key
+ * yield* cacheInvalidate(`user:${id}`, { schema: UserSchema, version: true })
  * ```
  */
-export const cacheInvalidate = (
-  key: string
+export const cacheInvalidate = <V = unknown>(
+  key: string,
+  options?: CacheInvalidateOptions<V>
 ): Effect.Effect<void, CacheClientError, CacheService> =>
   Effect.gen(function* () {
     const cacheService = yield* CacheService
-    yield* cacheService.delete(key)
+    const effectiveKey = options
+      ? resolveKey(key, options.schema, options.version)
+      : key
+    yield* cacheService.delete(effectiveKey)
   })
 
 /**

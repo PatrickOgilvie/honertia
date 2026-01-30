@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.40] - 2026-01-30
+
+### Added
+
+- **Cache key versioning for safe schema migrations**: New `version` option in cache functions automatically invalidates cache when schemas change. Use `version: true` for auto-hashing based on schema structure, or pass an explicit version string like `'v2'`.
+  ```typescript
+  // Auto-versioning: cache key becomes "a1b2c3:user:123" (schema hash prefix)
+  const user = yield* cache(
+    `user:${id}`,
+    fetchUser(id),
+    UserSchema,
+    { ttl: Duration.hours(1), version: true }
+  )
+
+  // Explicit version: cache key becomes "v2:user:123"
+  const user = yield* cache(
+    `user:${id}`,
+    fetchUser(id),
+    UserSchema,
+    { ttl: Duration.hours(1), version: 'v2' }
+  )
+  ```
+
+- **`CacheGetOptions` type**: New options parameter for `cacheGet()` to support versioning.
+  ```typescript
+  const cached = yield* cacheGet(`user:${id}`, UserSchema, { version: true })
+  ```
+
+- **`CacheInvalidateOptions` type**: New options parameter for `cacheInvalidate()` to support versioned key invalidation.
+  ```typescript
+  yield* cacheInvalidate(`user:${id}`, { schema: UserSchema, version: true })
+  ```
+
 ## [0.1.39] - 2026-01-30
 
 ### Added

@@ -808,4 +808,192 @@ describe('cache', () => {
       expect(callCount).toBe(1) // No additional compute
     })
   })
+
+  describe('cache versioning', () => {
+    it('uses explicit version prefix in cache key', async () => {
+      const { layer, store } = makeTestCache()
+
+      await Effect.gen(function* () {
+        const user = { id: '1', name: 'Test', email: 'test@example.com' }
+        yield* cacheSet('user:1', user, UserSchema, { ttl: Duration.hours(1), version: 'v2' })
+
+        // Key should be prefixed with version
+        expect(store.has('v2:user:1')).toBe(true)
+        expect(store.has('user:1')).toBe(false)
+      }).pipe(Effect.provide(layer), Effect.runPromise)
+    })
+
+    it('retrieves versioned cache with matching version', async () => {
+      const { layer, store } = makeTestCache()
+
+      await Effect.gen(function* () {
+        const user = { id: '1', name: 'Test', email: 'test@example.com' }
+        yield* cacheSet('user:1', user, UserSchema, { ttl: Duration.hours(1), version: 'v2' })
+
+        // Can retrieve with same version
+        const result = yield* cacheGet('user:1', UserSchema, { version: 'v2' })
+        expect(Option.isSome(result)).toBe(true)
+        if (Option.isSome(result)) {
+          expect(result.value.name).toBe('Test')
+        }
+
+        // Cannot retrieve without version (different key)
+        const noVersion = yield* cacheGet('user:1', UserSchema)
+        expect(Option.isNone(noVersion)).toBe(true)
+      }).pipe(Effect.provide(layer), Effect.runPromise)
+    })
+
+    it('auto-generates version from schema hash when version=true', async () => {
+      const { layer, store } = makeTestCache()
+
+      await Effect.gen(function* () {
+        const user = { id: '1', name: 'Test', email: 'test@example.com' }
+        yield* cacheSet('user:1', user, UserSchema, { ttl: Duration.hours(1), version: true })
+
+        // Key should have a hash prefix (not 'user:1' and not 'true:user:1')
+        const keys = [...store.keys()]
+        expect(keys.length).toBe(1)
+        expect(keys[0]).not.toBe('user:1')
+        expect(keys[0]).not.toBe('true:user:1')
+        expect(keys[0]).toMatch(/^[a-z0-9]+:user:1$/) // hash:key format
+      }).pipe(Effect.provide(layer), Effect.runPromise)
+    })
+
+    it('same schema produces same hash', async () => {
+      const { layer, store } = makeTestCache()
+
+      await Effect.gen(function* () {
+        const user = { id: '1', name: 'Test', email: 'test@example.com' }
+
+        // Set with auto version
+        yield* cacheSet('user:1', user, UserSchema, { ttl: Duration.hours(1), version: true })
+
+        // Get with auto version should find it
+        const result = yield* cacheGet('user:1', UserSchema, { version: true })
+        expect(Option.isSome(result)).toBe(true)
+      }).pipe(Effect.provide(layer), Effect.runPromise)
+    })
+
+    it('different schemas produce different hashes', async () => {
+      const { layer, store } = makeTestCache()
+
+      const OtherSchema = S.Struct({
+        id: S.String,
+        title: S.String, // Different field
+      })
+
+      await Effect.gen(function* () {
+        const user = { id: '1', name: 'Test', email: 'test@example.com' }
+        yield* cacheSet('item:1', user, UserSchema, { ttl: Duration.hours(1), version: true })
+
+        // Different schema should not find the cached value
+        const result = yield* cacheGet('item:1', OtherSchema, { version: true })
+        expect(Option.isNone(result)).toBe(true)
+      }).pipe(Effect.provide(layer), Effect.runPromise)
+    })
+
+    it('cache() respects versioning', async () => {
+      const { layer, store } = makeTestCache()
+      let callCount = 0
+
+      await Effect.gen(function* () {
+        const compute = Effect.sync(() => {
+          callCount++
+          return { id: '1', name: 'Test User', email: 'test@example.com' }
+        })
+
+        // First call with version
+        const first = yield* cache('user:1', compute, UserSchema, {
+          ttl: Duration.hours(1),
+          version: 'v1',
+        })
+        expect(first.name).toBe('Test User')
+        expect(callCount).toBe(1)
+
+        // Second call with same version - cache hit
+        const second = yield* cache('user:1', compute, UserSchema, {
+          ttl: Duration.hours(1),
+          version: 'v1',
+        })
+        expect(second.name).toBe('Test User')
+        expect(callCount).toBe(1) // No recompute
+
+        // Third call with different version - cache miss
+        const third = yield* cache('user:1', compute, UserSchema, {
+          ttl: Duration.hours(1),
+          version: 'v2',
+        })
+        expect(third.name).toBe('Test User')
+        expect(callCount).toBe(2) // Recomputed for new version
+      }).pipe(Effect.provide(layer), Effect.runPromise)
+    })
+
+    it('cacheInvalidate() respects versioning', async () => {
+      const { layer, store } = makeTestCache()
+
+      await Effect.gen(function* () {
+        const user = { id: '1', name: 'Test', email: 'test@example.com' }
+
+        // Set both versioned and unversioned
+        yield* cacheSet('user:1', user, UserSchema, { ttl: Duration.hours(1) })
+        yield* cacheSet('user:1', user, UserSchema, { ttl: Duration.hours(1), version: 'v2' })
+
+        expect(store.has('user:1')).toBe(true)
+        expect(store.has('v2:user:1')).toBe(true)
+
+        // Invalidate only versioned
+        yield* cacheInvalidate('user:1', { schema: UserSchema, version: 'v2' })
+
+        expect(store.has('user:1')).toBe(true) // Unversioned still exists
+        expect(store.has('v2:user:1')).toBe(false) // Versioned deleted
+      }).pipe(Effect.provide(layer), Effect.runPromise)
+    })
+
+    it('schema change auto-invalidates when using version=true', async () => {
+      const { layer, store } = makeTestCache()
+      let callCount = 0
+
+      // Original schema
+      const UserSchemaV1 = S.Struct({
+        id: S.String,
+        name: S.String,
+        email: S.String,
+      })
+
+      // Updated schema with new field
+      const UserSchemaV2 = S.Struct({
+        id: S.String,
+        name: S.String,
+        email: S.String,
+        avatar: S.optional(S.String), // New field
+      })
+
+      await Effect.gen(function* () {
+        // Cache with v1 schema
+        const computeV1 = Effect.sync(() => {
+          callCount++
+          return { id: '1', name: 'User V1', email: 'v1@example.com' }
+        })
+
+        yield* cache('user:1', computeV1, UserSchemaV1, {
+          ttl: Duration.hours(1),
+          version: true,
+        })
+        expect(callCount).toBe(1)
+
+        // Try to get with v2 schema - different hash, so cache miss
+        const computeV2 = Effect.sync(() => {
+          callCount++
+          return { id: '1', name: 'User V2', email: 'v2@example.com' }
+        })
+
+        const result = yield* cache('user:1', computeV2, UserSchemaV2, {
+          ttl: Duration.hours(1),
+          version: true,
+        })
+        expect(result.name).toBe('User V2') // Got v2, not v1
+        expect(callCount).toBe(2) // Recomputed because schema changed
+      }).pipe(Effect.provide(layer), Effect.runPromise)
+    })
+  })
 })

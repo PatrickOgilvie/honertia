@@ -364,7 +364,13 @@ export function buildContextLayer<E extends Env, CustomServices = never>(
   )
 
   // ExecutionContext layer - for background task execution
-  const executionCtx = (c as any).executionCtx as CloudflareExecutionContext | undefined
+  // Note: Hono's executionCtx getter throws in non-Worker environments, so we wrap in try/catch
+  let executionCtx: CloudflareExecutionContext | undefined
+  try {
+    executionCtx = (c as any).executionCtx
+  } catch {
+    executionCtx = undefined
+  }
   const executionContextLayer = Layer.succeed(
     ExecutionContextService,
     executionCtx

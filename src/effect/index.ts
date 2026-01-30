@@ -249,6 +249,8 @@ export {
   cacheInvalidate,
   cacheInvalidatePrefix,
   type CacheOptions,
+  type CacheGetOptions,
+  type CacheInvalidateOptions,
 } from '../cache.js'
 
 // Auth
