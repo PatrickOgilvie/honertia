@@ -19,7 +19,6 @@ import {
   Redirect,
   ValidationError,
 } from './errors.js'
-import { ErrorCodes } from './error-catalog.js'
 import {
   DatabaseService,
   AuthService,
@@ -29,7 +28,7 @@ import {
   BindingsService,
 } from './services.js'
 import { ValidatedBodyService, ValidatedQueryService } from './validated-services.js'
-import { validate } from './validation.js'
+import { createBodyParseValidationError, validateUnknown } from './validation.js'
 import {
   parseBindings,
   toHonoPath,
@@ -141,11 +140,8 @@ async function parseRequestBody<E extends Env>(
       return await c.req.json<unknown>()
     }
     return await c.req.parseBody()
-  } catch {
-    throw new ValidationError({
-      errors: { form: isJson ? 'Invalid JSON body' : 'Could not parse request body' },
-      code: ErrorCodes.VAL_003_BODY_PARSE_FAILED,
-    })
+  } catch (error) {
+    throw createBodyParseValidationError(error, contentType)
   }
 }
 
@@ -291,7 +287,7 @@ export class EffectRouteBuilder<
     }
 
     // Dynamic import to avoid requiring drizzle-orm for non-binding users
-    const { eq } = await import('drizzle-orm')
+    const { eq, and } = await import('drizzle-orm')
 
     const models = new Map<string, unknown>()
     let parent: { tableName: string; model: Record<string, unknown> } | null = null
@@ -320,19 +316,32 @@ export class EffectRouteBuilder<
         where: (c: unknown) => QueryBuilder
         limit: (n: number) => PromiseLike<unknown[]>
       }
-      const dbClient = db as { select: () => { from: (t: unknown) => QueryBuilder } }
-      let query: QueryBuilder = dbClient.select().from(table).where(eq(column as Parameters<typeof eq>[0], paramValue))
+      let whereCondition: unknown = eq(column as Parameters<typeof eq>[0], paramValue)
 
       // If we have a parent, try to scope the query
       if (parent) {
         const relation = findRelation(schema, tableName, parent.tableName)
         if (relation) {
           const foreignKeyColumn = table[relation.foreignKey]
-          if (foreignKeyColumn && parent.model[relation.references]) {
-            query = query.where(eq(foreignKeyColumn as Parameters<typeof eq>[0], parent.model[relation.references]))
+          const parentReferenceValue = parent.model[relation.references]
+          if (
+            foreignKeyColumn &&
+            parentReferenceValue !== undefined &&
+            parentReferenceValue !== null
+          ) {
+            whereCondition = and(
+              whereCondition as Parameters<typeof and>[0],
+              eq(
+                foreignKeyColumn as Parameters<typeof eq>[0],
+                parentReferenceValue
+              ) as Parameters<typeof and>[1]
+            )
           }
         }
       }
+
+      const dbClient = db as { select: () => { from: (t: unknown) => QueryBuilder } }
+      const query: QueryBuilder = dbClient.select().from(table).where(whereCondition)
 
       // Execute the query - use .limit(1) for cross-database compatibility
       // (PostgreSQL/MySQL don't have .get(), only SQLite does)
@@ -385,7 +394,7 @@ export class EffectRouteBuilder<
         if (shouldValidateBody && !BODYLESS_METHODS.has(c.req.method.toUpperCase())) {
           const body = await parseRequestBody(c)
           validatedBody = await Effect.runPromise(
-            validate(bodySchema as S.Schema.AnyNoContext, body)
+            validateUnknown(bodySchema as S.Schema.AnyNoContext, body)
           )
           hasValidatedBody = true
         }
@@ -393,7 +402,7 @@ export class EffectRouteBuilder<
         if (querySchema) {
           const query = c.req.query()
           validatedQuery = await Effect.runPromise(
-            validate(querySchema as S.Schema.AnyNoContext, query)
+            validateUnknown(querySchema as S.Schema.AnyNoContext, query)
           )
           hasValidatedQuery = true
         }

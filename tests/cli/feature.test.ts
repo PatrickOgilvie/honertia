@@ -132,7 +132,7 @@ describe('generateFeature', () => {
         path: '/projects/{project}',
       })
 
-      expect(result.content).toContain("yield* bound<Project>('project')")
+      expect(result.content).toContain("yield* bound('project')")
     })
 
     test('includes validateRequest for routes with fields', () => {
@@ -145,6 +145,31 @@ describe('generateFeature', () => {
       })
 
       expect(result.content).toContain('const input = yield* validateRequest(params)')
+    })
+
+    test('scaffolds dbMutation for mutating handlers', () => {
+      const result = generateFeature({
+        name: 'projects/create',
+        method: 'POST',
+        auth: 'required',
+        fields: [
+          { name: 'name', type: 'string', modifier: 'required' },
+        ],
+      })
+
+      expect(result.content).toContain('const db = yield* DatabaseService')
+      expect(result.content).toContain('yield* dbMutation(db, trustedInput, async (tx, trustedInput) => {')
+      expect(result.content).toContain('const trustedInput = asTrusted({')
+      expect(result.content).toContain("return yield* redirect('/projects')")
+    })
+
+    test('does not scaffold dbMutation for GET handlers', () => {
+      const result = generateFeature({
+        name: 'projects/show',
+        method: 'GET',
+      })
+
+      expect(result.content).not.toContain('yield* dbMutation(')
     })
   })
 
@@ -335,7 +360,7 @@ describe('generateFeature', () => {
       })
 
       // Should use 'project' (singular) for binding
-      expect(result.content).toContain("const project = yield* bound<Project>('project')")
+      expect(result.content).toContain("const project = yield* bound('project')")
     })
 
     test('handles -ies plural', () => {

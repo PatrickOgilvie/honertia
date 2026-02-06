@@ -5,6 +5,8 @@
  * Enables API documentation and client code generation.
  */
 
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
 import {
   RouteRegistry,
   getGlobalRegistry,
@@ -514,6 +516,86 @@ export function generateOpenApi(
   return spec
 }
 
+function formatYamlScalar(value: unknown): string {
+  if (value === null) return 'null'
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value)
+  }
+  if (typeof value !== 'string') {
+    return JSON.stringify(value)
+  }
+
+  if (value.length === 0) {
+    return "''"
+  }
+
+  const needsQuotes =
+    /^\s|\s$/.test(value) ||
+    /[:#[\]{}&,*!?|>'"%@`]/.test(value) ||
+    /^(true|false|null|~|-?\d+(\.\d+)?([eE][+-]?\d+)?)$/i.test(value)
+
+  return needsQuotes ? JSON.stringify(value) : value
+}
+
+function toYaml(value: unknown, indent = 0): string {
+  const padding = '  '.repeat(indent)
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return `${padding}[]`
+    }
+
+    return value
+      .map((item) => {
+        if (item !== null && typeof item === 'object') {
+          const nested = toYaml(item, indent + 1)
+          return `${padding}-\n${nested}`
+        }
+
+        return `${padding}- ${formatYamlScalar(item)}`
+      })
+      .join('\n')
+  }
+
+  if (value !== null && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+    if (entries.length === 0) {
+      return `${padding}{}`
+    }
+
+    return entries
+      .map(([key, item]) => {
+        const safeKey = /^[A-Za-z0-9_-]+$/.test(key) ? key : JSON.stringify(key)
+
+        if (item !== null && typeof item === 'object') {
+          const nested = toYaml(item, indent + 1)
+          return `${padding}${safeKey}:\n${nested}`
+        }
+
+        return `${padding}${safeKey}: ${formatYamlScalar(item)}`
+      })
+      .join('\n')
+  }
+
+  return `${padding}${formatYamlScalar(value)}`
+}
+
+export function formatOpenApiOutput(
+  spec: OpenApiSpec,
+  format: 'json' | 'yaml' = 'json'
+): string {
+  if (format === 'yaml') {
+    return `${toYaml(spec)}\n`
+  }
+
+  return `${JSON.stringify(spec, null, 2)}\n`
+}
+
+function writeOutputFile(outputPath: string, content: string): void {
+  mkdirSync(dirname(outputPath), { recursive: true })
+  writeFileSync(outputPath, content, 'utf-8')
+}
+
 /**
  * Options for the generate:openapi CLI command.
  */
@@ -620,10 +702,10 @@ EXAMPLES:
 /**
  * Run the generate:openapi command.
  */
-export function runGenerateOpenApi(
+export async function runGenerateOpenApi(
   args: string[] = [],
   registry: RouteRegistry = getGlobalRegistry()
-): void {
+): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     console.log(generateOpenApiHelp())
     return
@@ -642,14 +724,16 @@ export function runGenerateOpenApi(
     excludePrefixes: cliOptions.excludePrefixes,
   })
 
-  const output = JSON.stringify(spec, null, 2)
+  const format = cliOptions.format ?? 'json'
+  const output = formatOpenApiOutput(spec, format)
 
   if (cliOptions.preview || !cliOptions.output) {
     console.log(output)
     return
   }
 
-  // File writing would be handled by the CLI runner
+  writeOutputFile(cliOptions.output, output)
   console.log(`Generated OpenAPI spec: ${cliOptions.output}`)
+  console.log(`Format: ${format}`)
   console.log(`Routes documented: ${Object.keys(spec.paths).length}`)
 }

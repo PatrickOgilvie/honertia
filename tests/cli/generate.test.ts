@@ -243,6 +243,42 @@ describe('generateAction', () => {
       expect(result.content).toContain("return yield* redirect('/projects')")
     })
 
+    test('scaffolds dbMutation for non-GET requests', () => {
+      const result = generateAction({
+        name: 'projects/create',
+        method: 'POST',
+        path: '/projects',
+      })
+
+      expect(result.content).toContain('const db = yield* DatabaseService')
+      expect(result.content).toContain('yield* dbMutation(db, trustedInput, async (tx, trustedInput) => {')
+      expect(result.content).toContain('Replace with your Drizzle write')
+    })
+
+    test('uses trusted payload boundary for mutating authenticated actions', () => {
+      const result = generateAction({
+        name: 'projects/create',
+        method: 'POST',
+        path: '/projects',
+        auth: 'required',
+        schema: 'name:string:required',
+      })
+
+      expect(result.content).toContain('const trustedInput = asTrusted({')
+      expect(result.content).toContain('...input,')
+      expect(result.content).toContain('userId: auth.user.id,')
+    })
+
+    test('does not scaffold dbMutation for GET requests', () => {
+      const result = generateAction({
+        name: 'projects/index',
+        method: 'GET',
+        path: '/projects',
+      })
+
+      expect(result.content).not.toContain('yield* dbMutation(')
+    })
+
     test('handles uuid field type', () => {
       const result = generateAction({
         name: 'test',
@@ -278,6 +314,7 @@ describe('generateAction', () => {
       expect(result.content).toContain("describe(`Route: ${route.name}")
       expect(result.content).toContain('createTestApp')
       expect(result.content).toContain('effectRoutes(app, { registry })')
+      expect(result.content).toContain('setupHonertia')
     })
 
     test('includes auth tests for required auth', () => {
@@ -324,7 +361,8 @@ describe('generateAction', () => {
       })
 
       expect(result.content).toContain('processes request')
-      expect(result.content).toContain('X-Test-User')
+      expect(result.content).toContain('buildHeaders')
+      expect(result.content).toContain('expect(res.status).toBe(303)')
     })
 
     test('can skip inline tests', () => {

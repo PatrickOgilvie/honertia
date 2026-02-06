@@ -104,6 +104,7 @@ const makeTestCache = (): {
         keys: [...store.keys()]
           .filter((k) => !options?.prefix || k.startsWith(options.prefix))
           .map((name) => ({ name })),
+        list_complete: true,
       })),
   }
 
@@ -444,6 +445,75 @@ describe('cache', () => {
         expect(store.has('key2')).toBe(true)
       }).pipe(Effect.provide(layer), Effect.runPromise)
     })
+
+    it('paginates through all list results', async () => {
+      const store = new Map<string, { value: string; expiresAt: number }>()
+      const listCalls: Array<string | undefined> = []
+      let listedSnapshot: string[] | null = null
+
+      store.set('user:1:profile', { value: '{}', expiresAt: Date.now() + 3600000 })
+      store.set('user:1:settings', { value: '{}', expiresAt: Date.now() + 3600000 })
+      store.set('user:1:notifications', { value: '{}', expiresAt: Date.now() + 3600000 })
+      store.set('user:1:projects', { value: '{}', expiresAt: Date.now() + 3600000 })
+      store.set('user:2:profile', { value: '{}', expiresAt: Date.now() + 3600000 })
+
+      const cacheClient: CacheClient = {
+        get: (key) =>
+          Effect.sync(() => {
+            const entry = store.get(key)
+            if (!entry || entry.expiresAt < Date.now()) {
+              store.delete(key)
+              return null
+            }
+            return entry.value
+          }),
+        put: (key, value, options) =>
+          Effect.sync(() => {
+            const ttlMs = (options?.expirationTtl ?? 3600) * 1000
+            store.set(key, { value, expiresAt: Date.now() + ttlMs })
+          }),
+        delete: (key) =>
+          Effect.sync(() => {
+            store.delete(key)
+          }),
+        list: (options) =>
+          Effect.sync(() => {
+            listCalls.push(options?.cursor)
+            if (listedSnapshot === null) {
+              listedSnapshot = [...store.keys()]
+                .filter((k) => !options?.prefix || k.startsWith(options.prefix))
+                .sort()
+            }
+
+            const pageSize = 2
+            const offset = Number(options?.cursor ?? '0')
+            const page = listedSnapshot.slice(offset, offset + pageSize)
+            const nextOffset = offset + page.length
+            const listComplete = nextOffset >= listedSnapshot.length
+
+            return {
+              keys: page.map((name) => ({ name })),
+              list_complete: listComplete,
+              cursor: listComplete ? undefined : String(nextOffset),
+            }
+          }),
+      }
+
+      await Effect.gen(function* () {
+        yield* cacheInvalidatePrefix('user:1:')
+
+        expect(store.has('user:1:profile')).toBe(false)
+        expect(store.has('user:1:settings')).toBe(false)
+        expect(store.has('user:1:notifications')).toBe(false)
+        expect(store.has('user:1:projects')).toBe(false)
+        expect(store.has('user:2:profile')).toBe(true)
+      }).pipe(
+        Effect.provide(Layer.succeed(CacheService, cacheClient)),
+        Effect.runPromise
+      )
+
+      expect(listCalls).toEqual([undefined, '2'])
+    })
   })
 
   describe('CacheService directly', () => {
@@ -699,7 +769,7 @@ describe('cache', () => {
       }).pipe(Effect.provide(layer), Effect.runPromise)
     })
 
-    it('skips background refresh when ExecutionContext is unavailable', async () => {
+    it('recomputes synchronously when ExecutionContext is unavailable', async () => {
       // Create cache layer with noop ExecutionContext
       const store = new Map<string, { value: string; expiresAt: number }>()
       const cacheClient: CacheClient = {
@@ -723,6 +793,7 @@ describe('cache', () => {
             keys: [...store.keys()]
               .filter((k) => !options?.prefix || k.startsWith(options.prefix))
               .map((name) => ({ name })),
+            list_complete: true,
           })),
       }
 
@@ -752,14 +823,14 @@ describe('cache', () => {
           swr: Duration.hours(2),
         })
 
-        expect(result.name).toBe('Stale User') // Returns stale value
-        expect(callCount).toBe(0) // No background refresh because ExecutionContext unavailable
+        expect(result.name).toBe('Fresh User')
+        expect(callCount).toBe(1)
       }).pipe(Effect.provide(layer), Effect.runPromise)
 
-      // Stale value is still in cache (no refresh happened)
+      // Cache was refreshed synchronously
       const cachedEntry = store.get('user:1')
       const parsed = JSON.parse(cachedEntry!.value)
-      expect(parsed.v.name).toBe('Stale User')
+      expect(parsed.v.name).toBe('Fresh User')
     })
 
     it('subsequent request gets fresh value after background refresh completes', async () => {

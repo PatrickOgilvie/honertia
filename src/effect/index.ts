@@ -127,7 +127,9 @@ export {
   getValidationData,
   formatSchemaErrors,
   formatSchemaErrorsWithDetails,
+  createBodyParseValidationError,
   validate,
+  validateUnknown,
   validateRequest,
   asValidated,
   asTrusted,
@@ -167,7 +169,9 @@ export {
   action,
   dbMutation,
   dbTransaction,
+  mergeMutationInput,
   type SafeTx,
+  type MutationInput,
 } from './action.js'
 
 // Response Helpers

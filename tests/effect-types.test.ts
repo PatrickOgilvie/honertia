@@ -3,7 +3,7 @@
  * If this file compiles, the types are correct.
  */
 
-import { Effect } from 'effect'
+import { Effect, Schema as S } from 'effect'
 import { sqliteTable, text } from 'drizzle-orm/sqlite-core'
 import {
   DatabaseService,
@@ -13,8 +13,11 @@ import {
   pluralize,
   asValidated,
   asTrusted,
+  validate,
+  validateUnknown,
   dbMutation,
   dbTransaction,
+  mergeMutationInput,
   type DatabaseType,
   type SchemaType,
   type AuthType,
@@ -250,13 +253,64 @@ type PlainAccepted = UserInput extends SafeValuesParam ? true : false
 // dbMutation and dbTransaction should work with SafeTx
 const _testDbMutation = Effect.gen(function* () {
   const mockDb = {} as MockDB
-  const validated = asValidated({ name: 'test', email: 'test@test.com' })
 
   // This should compile - validated input is accepted
   yield* dbMutation(mockDb, async (db) => {
     // db is SafeTx<MockDB> here
     return Promise.resolve()
   })
+})
+
+const _testScopedDbMutation = Effect.gen(function* () {
+  const mockDb = {} as MockDB
+  const txInput = asTrusted({
+    createUser: {
+      name: 'test',
+      email: 'test@test.com',
+      id: undefined as string | undefined,
+    },
+  })
+
+  yield* dbMutation(mockDb, txInput, async (db, scoped) => {
+    const scopedUser = mergeMutationInput(scoped.createUser, {
+      id: 'user-123',
+    })
+    const _scopedUserIdNarrowed: AssertEqual<typeof scopedUser.id, string> = true
+    void scopedUser
+
+    // @ts-expect-error extra keys must be declared in the scoped schema
+    mergeMutationInput(scoped.createUser, { note: 'nope' })
+
+    // @ts-expect-error scoped mode rejects ad-hoc trusted payloads
+    await db.insert(projects).values(asTrusted({ name: 'x', email: 'x@test.com' }))
+    return Promise.resolve()
+  })
+})
+
+const _testValidateTyping = Effect.gen(function* () {
+  const transactionSchema = S.Struct({
+    status: S.Literal('pending'),
+    quantity: S.NumberFromString,
+  })
+
+  // Typed validate enforces schema-encoded input at compile time
+  yield* validate(transactionSchema, {
+    status: 'pending',
+    quantity: '2',
+  })
+
+  // @ts-expect-error typo in field name should fail compile-time
+  yield* validate(transactionSchema, {
+    sttaus: 'pending',
+    quantity: '2',
+  })
+
+  const raw: unknown = {
+    status: 'pending',
+    quantity: '2',
+  }
+  // Unknown payloads are still supported via validateUnknown
+  yield* validateUnknown(transactionSchema, raw)
 })
 
 const _testDbTransaction = Effect.gen(function* () {
@@ -332,6 +386,7 @@ describe('Effect type tests', () => {
 
   test('dbMutation and dbTransaction are properly typed', () => {
     expect(_testDbMutation).toBeDefined()
+    expect(_testScopedDbMutation).toBeDefined()
     expect(_testDbTransaction).toBeDefined()
   })
 })

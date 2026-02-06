@@ -59,6 +59,11 @@ export interface EffectBridgeConfig<E extends Env, CustomServices = never> {
    */
   services?: (c: HonoContext<E>) => Layer.Layer<CustomServices, never, never>
   /**
+   * Context variable key where loadUser middleware stores the authenticated user.
+   * Defaults to `authUser`.
+   */
+  authUserKey?: string
+  /**
    * Drizzle schema for route model binding.
    * Usually configured via `setupHonertia({ honertia: { schema } })`.
    * Can also be passed here for standalone effectBridge usage.
@@ -188,7 +193,11 @@ interface KVNamespace {
   get(key: string, options?: { type?: 'text' }): Promise<string | null>
   put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>
   delete(key: string): Promise<void>
-  list(options?: { prefix?: string }): Promise<{ keys: Array<{ name: string }> }>
+  list(options?: { prefix?: string; cursor?: string }): Promise<{
+    keys: Array<{ name: string }>
+    list_complete: boolean
+    cursor?: string
+  }>
 }
 
 /**
@@ -320,6 +329,8 @@ export function buildContextLayer<E extends Env, CustomServices = never>(
   never,
   never
 > {
+  const authUserKey = config?.authUserKey ?? 'authUser'
+
   const requestLayer = Layer.succeed(RequestService, createRequestContext(c))
   const responseLayer = Layer.succeed(ResponseFactoryService, createResponseFactory(c))
   const honertiaLayer = Layer.succeed(HonertiaService, createHonertiaRenderer(c))
@@ -389,8 +400,15 @@ export function buildContextLayer<E extends Env, CustomServices = never>(
     executionContextLayer
   )
 
-  if ((c as any).var?.authUser) {
-    baseLayer = Layer.merge(baseLayer, Layer.succeed(AuthUserService, (c as any).var.authUser as AuthUser))
+  const authUserFromContext =
+    (c as any).var?.[authUserKey] ??
+    (authUserKey !== 'authUser' ? (c as any).var?.authUser : undefined)
+
+  if (authUserFromContext) {
+    baseLayer = Layer.merge(
+      baseLayer,
+      Layer.succeed(AuthUserService, authUserFromContext as AuthUser)
+    )
   }
 
   // Merge custom services if provided

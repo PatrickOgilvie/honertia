@@ -8,7 +8,7 @@ import { Effect, Schema as S, ParseResult } from 'effect'
 import { RequestService } from './services.js'
 import { ValidationError } from './errors.js'
 import type { FieldError } from './error-types.js'
-import { ErrorCodes } from './error-catalog.js'
+import { ErrorCodes, type ErrorCode } from './error-catalog.js'
 
 /**
  * Extract validation data from the request.
@@ -35,11 +35,8 @@ export const getValidationData: Effect.Effect<
   const body = yield* Effect.tryPromise(() =>
     isJson ? request.json<Record<string, unknown>>() : request.parseBody()
   ).pipe(
-    Effect.mapError(() =>
-      new ValidationError({
-        errors: { form: isJson ? 'Invalid JSON body' : 'Could not parse request body' },
-        code: ErrorCodes.VAL_003_BODY_PARSE_FAILED,
-      })
+    Effect.mapError((error) =>
+      createBodyParseValidationError(error, contentType)
     )
   )
 
@@ -213,13 +210,56 @@ export interface ValidateOptions {
 }
 
 /**
- * Validate data against a schema.
- * Returns validated data or fails with ValidationError.
+ * Build a parse error with concrete guidance for malformed request bodies.
  */
-export function validate<A, I>(
+export function createBodyParseValidationError(
+  error: unknown,
+  contentType: string
+): ValidationError {
+  const isJson = contentType.includes('application/json')
+  const reason = error instanceof Error ? error.message : String(error)
+  const base = isJson ? 'Invalid JSON body' : 'Could not parse request body'
+  const hint = isJson
+    ? 'Ensure Content-Type is application/json and the body is valid JSON.'
+    : 'Ensure the body encoding matches Content-Type and can be parsed by the request parser.'
+  const message = `${base}. ${hint}`
+
+  return new ValidationError({
+    errors: { form: message },
+    fieldDetails: {
+      form: {
+        value: reason,
+        expected: isJson ? 'valid JSON payload' : 'parsable request body',
+        message,
+        path: ['form'],
+        schemaType: isJson ? 'JSON' : 'Body',
+      },
+    },
+    code: ErrorCodes.VAL_003_BODY_PARSE_FAILED,
+  })
+}
+
+function determineValidationCode(
+  details: Record<string, FieldError>
+): ErrorCode {
+  const hasMissingValues = Object.entries(details).some(([field, detail]) =>
+    field !== 'form' && (detail.value === undefined || detail.value === null)
+  )
+
+  const hasRequiredLanguage = Object.values(details).some(
+    d => d.expected?.toLowerCase().includes('required') ||
+         d.message?.toLowerCase().includes('required')
+  )
+
+  return (hasMissingValues || hasRequiredLanguage)
+    ? ErrorCodes.VAL_001_FIELD_REQUIRED
+    : ErrorCodes.VAL_004_SCHEMA_MISMATCH
+}
+
+function runValidation<A, I>(
   schema: S.Schema<A, I>,
   data: unknown,
-  options: ValidateOptions = {}
+  options: ValidateOptions
 ): Effect.Effect<Validated<A>, ValidationError, never> {
   return S.decodeUnknown(schema)(data).pipe(
     Effect.mapError((error) => {
@@ -230,23 +270,39 @@ export function validate<A, I>(
         options.attributes
       )
 
-      // Determine the most appropriate error code
-      const hasRequiredErrors = Object.values(details).some(
-        d => d.expected?.toLowerCase().includes('required') ||
-             d.message?.toLowerCase().includes('required')
-      )
-
       return new ValidationError({
         errors,
         fieldDetails: details,
         component: options.errorComponent,
-        code: hasRequiredErrors
-          ? ErrorCodes.VAL_001_FIELD_REQUIRED
-          : ErrorCodes.VAL_004_SCHEMA_MISMATCH,
+        code: determineValidationCode(details),
       })
     }),
     Effect.map(asValidated)
   )
+}
+
+/**
+ * Validate data against a schema.
+ * Returns validated data or fails with ValidationError.
+ */
+export function validate<A, I>(
+  schema: S.Schema<A, I>,
+  data: I,
+  options: ValidateOptions = {}
+): Effect.Effect<Validated<A>, ValidationError, never> {
+  return runValidation(schema, data, options)
+}
+
+/**
+ * Validate unknown data against a schema.
+ * Use this for raw payloads (e.g. parsed request body, external JSON).
+ */
+export function validateUnknown<A, I>(
+  schema: S.Schema<A, I>,
+  data: unknown,
+  options: ValidateOptions = {}
+): Effect.Effect<Validated<A>, ValidationError, never> {
+  return runValidation(schema, data, options)
 }
 
 /**
@@ -259,6 +315,6 @@ export function validateRequest<A, I>(
 ): Effect.Effect<Validated<A>, ValidationError, RequestService> {
   return Effect.gen(function* () {
     const data = yield* getValidationData
-    return yield* validate(schema, data, options)
+    return yield* validateUnknown(schema, data, options)
   })
 }

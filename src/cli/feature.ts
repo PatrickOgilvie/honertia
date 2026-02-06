@@ -6,6 +6,8 @@
  * Optimized for AI agent workflows with reduced file operations.
  */
 
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
 import {
   type ActionMethod,
   type FieldDefinition,
@@ -311,10 +313,17 @@ ${imports}`)
  * Build imports section.
  */
 function buildImports(options: BuildOptions): string {
-  const { auth, fields, includeTests } = options
+  const { auth, fields, includeTests, method } = options
 
   const effectImports = ['Effect']
-  const honertiaImports = ['action', 'render']
+  const honertiaImports = ['action']
+  const isMutationMethod = method !== 'GET'
+
+  if (isMutationMethod) {
+    honertiaImports.push('DatabaseService', 'dbMutation', 'redirect')
+  } else {
+    honertiaImports.push('render')
+  }
 
   if (auth === 'required') {
     honertiaImports.push('authorize')
@@ -322,6 +331,10 @@ function buildImports(options: BuildOptions): string {
 
   if (fields.length > 0) {
     honertiaImports.push('validateRequest')
+  }
+
+  if (isMutationMethod && (auth === 'required' || fields.length > 0)) {
+    honertiaImports.push('asTrusted')
   }
 
   if (options.routePath.includes('{')) {
@@ -463,8 +476,8 @@ function buildHandler(options: HandlerOptions): string {
   } = options
 
   const singular = singularize(resource)
-  const singularPascal = toPascalCase(singular)
   const componentPath = `${toPascalCase(resource)}/${toPascalCase(action)}`
+  const isMutationMethod = method.toUpperCase() !== 'GET'
 
   const effectSteps: string[] = []
 
@@ -475,12 +488,27 @@ function buildHandler(options: HandlerOptions): string {
 
   // Binding
   if (hasBindings) {
-    effectSteps.push(`const ${singular} = yield* bound<${singularPascal}>('${singular}')`)
+    effectSteps.push(`const ${singular} = yield* bound('${singular}')`)
   }
 
   // Validation
   if (needsSchema) {
     effectSteps.push('const input = yield* validateRequest(params)')
+  }
+
+  if (isMutationMethod) {
+    const trustedFields: string[] = []
+    if (needsSchema) trustedFields.push('...input,')
+    if (auth === 'required') trustedFields.push('userId: user.user.id,')
+
+    if (trustedFields.length > 0) {
+      effectSteps.push('')
+      effectSteps.push('const trustedInput = asTrusted({')
+      for (const field of trustedFields) {
+        effectSteps.push(`  ${field}`)
+      }
+      effectSteps.push('})')
+    }
   }
 
   // Handler logic based on method
@@ -499,18 +527,39 @@ function buildHandler(options: HandlerOptions): string {
     case 'PATCH':
       effectSteps.push('')
       effectSteps.push(`// TODO: Implement ${action} logic`)
-      effectSteps.push(`// await db.update(${resource}).set({ ... })`)
-      effectSteps.push('')
-      if (hasBindings) {
-        effectSteps.push(`return yield* render('${componentPath}', { ${singular} })`)
+      effectSteps.push('const db = yield* DatabaseService')
+      if (needsSchema || auth === 'required') {
+        effectSteps.push('yield* dbMutation(db, trustedInput, async (tx, trustedInput) => {')
+        effectSteps.push('  // Replace with your Drizzle write.')
+        effectSteps.push('  // await tx.insert(schema.tableName).values(trustedInput)')
+        effectSteps.push('  void tx')
+        effectSteps.push('  void trustedInput')
+        effectSteps.push('})')
       } else {
-        effectSteps.push(`return yield* render('${componentPath}', { success: true })`)
+        effectSteps.push('yield* dbMutation(db, async (tx) => {')
+        effectSteps.push('  // Replace with your Drizzle write.')
+        effectSteps.push('  // await tx.insert(schema.tableName).values(asTrusted({ ... }))')
+        effectSteps.push('  void tx')
+        effectSteps.push('})')
+      }
+      effectSteps.push('')
+      if (method.toUpperCase() === 'POST') {
+        effectSteps.push(`return yield* redirect('/${resource}')`)
+      } else if (hasBindings) {
+        effectSteps.push(`return yield* redirect(\`/${resource}/\${${singular}.id}\`)`)
+      } else {
+        effectSteps.push(`return yield* redirect('/${resource}')`)
       }
       break
     case 'DELETE':
       effectSteps.push('')
       effectSteps.push(`// TODO: Implement ${action} logic`)
-      effectSteps.push(`// await db.delete(${resource}).where(eq(${resource}.id, ${singular}.id))`)
+      effectSteps.push('const db = yield* DatabaseService')
+      effectSteps.push('yield* dbMutation(db, async (tx) => {')
+      effectSteps.push('  // Replace with your Drizzle delete.')
+      effectSteps.push(`  // await tx.delete(${resource}).where(eq(${resource}.id, ${singular}.id))`)
+      effectSteps.push('  void tx')
+      effectSteps.push('})')
       effectSteps.push('')
       effectSteps.push(`return new Response(null, { status: 204 })`)
       break
@@ -544,6 +593,12 @@ function buildInlineTests(
   const testCases: string[] = []
 
   // Success case
+  const successStatus = method.toUpperCase() === 'DELETE'
+    ? 204
+    : method.toUpperCase() === 'GET'
+      ? 200
+      : 303
+
   testCases.push(`
   '${action}s ${singular} successfully': async (t) => {
     ${auth === 'required' ? 'const user = await t.createUser()' : ''}
@@ -554,7 +609,7 @@ function buildInlineTests(
       ${hasBindings ? `params: { ${singular}: ${singular}.id },` : ''}
     })
 
-    t.expect(res).${method.toUpperCase() === 'DELETE' ? 'toHaveStatus(204)' : 'toHaveStatus(200)'}
+    t.expect(res).toHaveStatus(${successStatus})
   },`)
 
   // Auth failure case
@@ -609,6 +664,7 @@ export interface GenerateFeatureCliOptions {
   noTests?: boolean
   noProps?: boolean
   output?: string
+  force?: boolean
   preview?: boolean
 }
 
@@ -651,6 +707,9 @@ export function parseGenerateFeatureArgs(args: string[]): GenerateFeatureCliOpti
       case '-o':
         options.output = args[++i]
         break
+      case '--force':
+        options.force = true
+        break
       case '--preview':
         options.preview = true
         break
@@ -688,6 +747,7 @@ OPTIONS:
   --no-tests          Skip inline test generation
   --no-props          Skip props type generation
   -o, --output        Output directory (default: src/features)
+  --force             Overwrite existing file
   --preview           Preview without writing file
 
 EXAMPLES:
@@ -756,7 +816,15 @@ export function runGenerateFeature(args: string[] = []): void {
     return
   }
 
-  // In actual CLI, this would write the file
+  if (existsSync(result.path) && !cliOptions.force) {
+    console.log(`Error: File already exists at ${result.path}`)
+    console.log('Use --force to overwrite')
+    process.exit(1)
+  }
+
+  mkdirSync(dirname(result.path), { recursive: true })
+  writeFileSync(result.path, result.content, 'utf-8')
+
   console.log(`Generated: ${result.path}`)
   console.log(`  Route: ${result.routeName}`)
   console.log(`  Path: ${result.routePath}`)

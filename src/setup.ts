@@ -172,14 +172,15 @@ export function setupHonertia<
   // Build effect bridge config, passing schema from honertia config
   const effectConfig: EffectBridgeConfig<E, CustomServices> = {
     ...config.effect,
-    schema,
+    authUserKey: config.auth?.userKey ?? config.effect?.authUserKey,
+    schema: schema ?? config.effect?.schema,
   }
 
   const middlewares: MiddlewareHandler<E>[] = [
     setupServices,
     honertia(honertiaConfig),
     loadUser<E>(config.auth),
-    shareAuthMiddleware<E>(),
+    shareAuthMiddleware<E>(config.auth),
     effectBridge<E, CustomServices>(effectConfig),
     ...(config.middleware ?? []),
   ]

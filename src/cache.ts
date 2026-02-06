@@ -21,7 +21,7 @@ export type CacheOptions = {
   /**
    * Stale-while-revalidate window. When set, stale values within this window
    * are returned immediately while a background refresh is triggered.
-   * Without ExecutionContext, the refresh happens on the next request.
+   * Without ExecutionContext, stale entries are recomputed synchronously.
    */
   swr?: Duration.DurationInput
   /**
@@ -193,8 +193,11 @@ export const cache = <V, E, R>(
               yield* storeInCache(freshValue)
             })
           )
+          return entry.v
         }
-        return entry.v
+
+        // No background execution available (tests/local dev): refresh inline.
+        // Fall through to synchronous recompute below.
       }
 
       // Beyond SWR window - fall through to recompute
@@ -211,6 +214,8 @@ export const cache = <V, E, R>(
 
 /**
  * Get a value from cache without computing.
+ * Returns any entry still present in the backing cache store.
+ * This does not apply `ttl`/`swr` freshness checks used by `cache()`.
  *
  * @example
  * ```typescript
@@ -321,12 +326,25 @@ export const cacheInvalidatePrefix = (
 ): Effect.Effect<void, CacheClientError, CacheService> =>
   Effect.gen(function* () {
     const cacheService = yield* CacheService
+    let cursor: string | undefined = undefined
 
-    const list = yield* cacheService.list({ prefix })
+    while (true) {
+      const page: {
+        keys: Array<{ name: string }>
+        list_complete: boolean
+        cursor?: string
+      } = yield* cacheService.list({ prefix, cursor })
 
-    yield* Effect.forEach(
-      list.keys,
-      (key) => cacheService.delete(key.name),
-      { concurrency: 10 }
-    )
+      yield* Effect.forEach(
+        page.keys,
+        (key) => cacheService.delete(key.name),
+        { concurrency: 10 }
+      )
+
+      if (page.list_complete || page.cursor === undefined) {
+        break
+      }
+
+      cursor = page.cursor
+    }
   })

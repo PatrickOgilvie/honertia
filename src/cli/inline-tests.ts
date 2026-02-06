@@ -5,6 +5,9 @@
  * so colocated inline tests run under bun test.
  */
 
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
+
 export interface GenerateInlineTestsRunnerOptions {
   /**
    * Output path for the runner file.
@@ -190,6 +193,9 @@ export function runGenerateInlineTestsRunner(args: string[] = []): void {
     console.log(result.content)
     return
   }
+
+  mkdirSync(dirname(result.path), { recursive: true })
+  writeFileSync(result.path, result.content, 'utf-8')
 
   console.log(`Generated: ${result.path}`)
   console.log('Inline tests will run when you execute: bun test')

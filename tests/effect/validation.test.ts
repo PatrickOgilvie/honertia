@@ -8,10 +8,12 @@ import {
   getValidationData,
   formatSchemaErrors,
   validate,
+  validateUnknown,
   validateRequest,
 } from '../../src/effect/validation.js'
 import { RequestService, type RequestContext } from '../../src/effect/services.js'
 import { ValidationError } from '../../src/effect/errors.js'
+import { ErrorCodes } from '../../src/effect/error-catalog.js'
 
 // Helper to create a mock request context
 const createMockRequest = (options: {
@@ -341,6 +343,36 @@ describe('validate', () => {
       }
     }
   })
+
+  test('uses required-field error code for missing fields', () => {
+    const schema = S.Struct({
+      name: S.String,
+    })
+
+    const exit = Effect.runSyncExit(validateUnknown(schema, {}))
+
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit) && Cause.isFailure(exit.cause)) {
+      const option = Cause.failureOption(exit.cause)
+      if (option._tag === 'Some') {
+        const error = option.value as ValidationError
+        expect(error.code).toBe(ErrorCodes.VAL_001_FIELD_REQUIRED)
+      }
+    }
+  })
+})
+
+describe('validateUnknown', () => {
+  test('validates unknown input', () => {
+    const schema = S.Struct({
+      id: S.String,
+      count: S.NumberFromString,
+    })
+    const raw: unknown = { id: 'x', count: '3' }
+
+    const result = Effect.runSync(validateUnknown(schema, raw))
+    expect(result).toEqual({ id: 'x', count: 3 })
+  })
 })
 
 describe('validateRequest', () => {
@@ -463,7 +495,9 @@ describe('validateRequest', () => {
       if (option._tag === 'Some') {
         const error = option.value as ValidationError
         expect(error._tag).toBe('ValidationError')
-        expect(error.errors.form).toBe('Invalid JSON body')
+        expect(error.errors.form).toContain('Invalid JSON body.')
+        expect(error.errors.form).toContain('Ensure Content-Type is application/json')
+        expect(error.code).toBe(ErrorCodes.VAL_003_BODY_PARSE_FAILED)
       }
     }
   })

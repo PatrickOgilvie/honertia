@@ -288,6 +288,13 @@ export async function dbMigrate(options: DbCommandOptions = {}): Promise<DbMigra
     // Execute migrations via drizzle-kit
     await runDrizzleMigrate(options.config)
 
+    const now = new Date().toISOString()
+    const updatedApplied = new Map(appliedMigrations)
+    for (const migration of pendingMigrations) {
+      updatedApplied.set(migration.name, now)
+    }
+    await saveAppliedMigrations(updatedApplied, options.config)
+
     return {
       success: true,
       applied: pendingMigrations.length,
@@ -334,6 +341,14 @@ export async function dbRollback(options: DbCommandOptions = {}): Promise<DbRoll
     const lastMigration = appliedList[appliedList.length - 1]
 
     if (options.preview) {
+      if (!lastMigration.downStatements || lastMigration.downStatements.length === 0) {
+        return {
+          success: false,
+          migration: lastMigration.name,
+          error: `Migration ${lastMigration.name} has no rollback SQL. Add a "-- @down" section to the migration file.`,
+        }
+      }
+
       return {
         success: true,
         migration: lastMigration.name,
@@ -341,12 +356,19 @@ export async function dbRollback(options: DbCommandOptions = {}): Promise<DbRoll
       }
     }
 
-    // Execute rollback
-    await runRollback(lastMigration.name, options.config)
+    if (!lastMigration.downStatements || lastMigration.downStatements.length === 0) {
+      return {
+        success: false,
+        migration: lastMigration.name,
+        error: `Migration ${lastMigration.name} has no rollback SQL. Add a "-- @down" section to the migration file.`,
+      }
+    }
 
     return {
-      success: true,
+      success: false,
       migration: lastMigration.name,
+      statements: lastMigration.downStatements,
+      error: 'Automatic rollback execution is not supported yet. Use --preview and run the SQL manually.',
     }
   } catch (error) {
     return {
@@ -400,6 +422,51 @@ interface MigrationFile {
   downStatements?: string[]
 }
 
+function splitSqlStatements(content: string): string[] {
+  return content
+    .split(';')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+}
+
+function parseMigrationSql(content: string): {
+  upStatements: string[]
+  downStatements: string[]
+} {
+  const downMarker = /^\s*--\s*(?:@down|down|rollback)\s*$/im
+  const match = downMarker.exec(content)
+
+  if (!match || match.index === undefined) {
+    return {
+      upStatements: splitSqlStatements(content),
+      downStatements: [],
+    }
+  }
+
+  const markerIndex = match.index
+  const markerLength = match[0].length
+
+  const upPart = content.slice(0, markerIndex)
+  const downPart = content.slice(markerIndex + markerLength)
+
+  return {
+    upStatements: splitSqlStatements(upPart),
+    downStatements: splitSqlStatements(downPart),
+  }
+}
+
+function toTrackingObject(applied: Map<string, string | undefined>): Record<string, string> {
+  return Object.fromEntries(
+    Array.from(applied.entries()).map(([name, appliedAt]) => [name, appliedAt ?? new Date().toISOString()])
+  )
+}
+
+async function getTrackingFilePath(configPath?: string): Promise<string> {
+  const path = await import('path')
+  const migrationsPath = await findMigrationsPath(configPath)
+  return path.join(migrationsPath, '.honertia-applied.json')
+}
+
 async function findMigrationsPath(configPath?: string): Promise<string> {
   // Default Drizzle migrations path
   const defaultPath = './drizzle'
@@ -435,15 +502,13 @@ async function readMigrationFiles(migrationsPath: string): Promise<MigrationFile
       if (file.endsWith('.sql')) {
         const filePath = path.join(migrationsPath, file)
         const content = await fs.readFile(filePath, 'utf-8')
-        const statements = content
-          .split(';')
-          .map((s) => s.trim())
-          .filter((s) => s.length > 0)
+        const { upStatements, downStatements } = parseMigrationSql(content)
 
         migrations.push({
           name: file.replace('.sql', ''),
           path: filePath,
-          statements,
+          statements: upStatements,
+          downStatements: downStatements.length > 0 ? downStatements : undefined,
         })
       }
     }
@@ -465,9 +530,28 @@ async function listMigrationFiles(migrationsPath: string): Promise<string[]> {
 }
 
 async function getAppliedMigrations(configPath?: string): Promise<Map<string, string | undefined>> {
-  // This would normally query the migrations table
-  // For now, return empty map - actual implementation depends on DB connection
-  return new Map()
+  try {
+    const fs = await import('fs/promises')
+    const trackingPath = await getTrackingFilePath(configPath)
+    const content = await fs.readFile(trackingPath, 'utf-8')
+    const parsed = JSON.parse(content) as Record<string, string>
+
+    return new Map(Object.entries(parsed))
+  } catch {
+    return new Map()
+  }
+}
+
+async function saveAppliedMigrations(
+  applied: Map<string, string | undefined>,
+  configPath?: string
+): Promise<void> {
+  const fs = await import('fs/promises')
+  const path = await import('path')
+  const trackingPath = await getTrackingFilePath(configPath)
+
+  await fs.mkdir(path.dirname(trackingPath), { recursive: true })
+  await fs.writeFile(trackingPath, JSON.stringify(toTrackingObject(applied), null, 2))
 }
 
 async function runDrizzleMigrate(configPath?: string): Promise<void> {
@@ -475,12 +559,6 @@ async function runDrizzleMigrate(configPath?: string): Promise<void> {
   const { execSync } = await import('child_process')
   const configArg = configPath ? `--config ${configPath}` : ''
   execSync(`npx drizzle-kit migrate ${configArg}`, { stdio: 'inherit' })
-}
-
-async function runRollback(migrationName: string, configPath?: string): Promise<void> {
-  // Drizzle Kit doesn't have built-in rollback
-  // This would need custom implementation
-  throw new Error('Rollback not implemented - requires custom migration tracking')
 }
 
 async function runDrizzleGenerate(name: string, configPath?: string): Promise<void> {
@@ -613,7 +691,7 @@ USAGE:
 COMMANDS:
   status              Show migration status
   migrate             Run pending migrations
-  rollback            Rollback last migration
+  rollback            Preview rollback SQL for last applied migration
   generate <name>     Generate new migration
 
 OPTIONS:
@@ -635,7 +713,7 @@ EXAMPLES:
   # Generate new migration
   honertia db generate add_status_to_projects
 
-  # Rollback with preview
+  # Preview rollback SQL
   honertia db rollback --preview
 
   # Use custom config
@@ -688,6 +766,12 @@ export async function runDb(args: string[] = []): Promise<void> {
       } else {
         if (!result.success) {
           console.log(`[ERROR] Rollback failed: ${result.error}`)
+          if (result.statements && result.statements.length > 0) {
+            console.log('\nRollback SQL:')
+            for (const s of result.statements) {
+              console.log(`  ${s};`)
+            }
+          }
         } else if (!result.migration) {
           console.log('No migrations to rollback.')
         } else if (options.preview) {

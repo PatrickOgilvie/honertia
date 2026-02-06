@@ -12,6 +12,8 @@ import { effectRoutes, type EffectHandler } from './routing.js'
 import { render } from './responses.js'
 import { validateRequest } from './validation.js'
 
+const DEFAULT_AUTH_USER_KEY = 'authUser'
+
 /**
  * Layer that requires an authenticated user.
  * Fails with UnauthorizedError if no user is present.
@@ -191,10 +193,18 @@ export const shareAuth: Effect.Effect<void, never, HonertiaService> =
 /**
  * Middleware version of shareAuth for use with app.use().
  */
-export function shareAuthMiddleware<E extends Env>(): MiddlewareHandler<E> {
+export function shareAuthMiddleware<E extends Env>(
+  config: { userKey?: string } = {}
+): MiddlewareHandler<E> {
+  const userKey = config.userKey ?? DEFAULT_AUTH_USER_KEY
+
   return async (c, next) => {
     const honertia = (c as any).var?.honertia
-    const authUser = (c as any).var?.authUser
+    const authUser =
+      (c as any).var?.[userKey] ??
+      (userKey !== DEFAULT_AUTH_USER_KEY
+        ? (c as any).var?.[DEFAULT_AUTH_USER_KEY]
+        : undefined)
     if (honertia) {
       honertia.share('auth', { user: authUser?.user ?? null })
     }
@@ -433,13 +443,24 @@ export function loadUser<E extends Env>(
     sessionCookie?: string
   } = {}
 ): MiddlewareHandler<E> {
-  const { userKey = 'authUser' } = config
+  const { userKey = DEFAULT_AUTH_USER_KEY, sessionCookie } = config
 
   return async (c, next) => {
     const auth = (c as any).var?.auth
     if (!auth) {
       await next()
       // Return response for proper propagation in forwarding/proxy scenarios
+      return c.res
+    }
+
+    const cookieHeader = c.req.header('Cookie') ?? ''
+    const hasSessionCookie = sessionCookie
+      ? cookieHeader.includes(`${sessionCookie}=`) ||
+        cookieHeader.includes(`__Secure-${sessionCookie}=`)
+      : true
+
+    if (!hasSessionCookie) {
+      await next()
       return c.res
     }
 

@@ -12,7 +12,12 @@ import { Hono } from 'hono'
 import { Effect } from 'effect'
 import { setupHonertia, registerErrorHandlers } from '../src/setup.js'
 import { effectRoutes } from '../src/effect/routing.js'
-import { DatabaseService, AuthService } from '../src/effect/services.js'
+import {
+  DatabaseService,
+  AuthService,
+  AuthUserService,
+  HonertiaService,
+} from '../src/effect/services.js'
 import { bound } from '../src/effect/binding.js'
 
 // =============================================================================
@@ -185,6 +190,195 @@ describe('setupHonertia schema configuration', () => {
     const json = await res.json()
     expect(json.id).toBe('123')
     expect(json.name).toBe('Test Project')
+  })
+
+  test('nested bindings keep both parent scope and child lookup constraints', async () => {
+    const app = new Hono<TestEnv>()
+
+    const usersTable = {
+      id: { name: 'id' },
+    }
+
+    const postsTable = {
+      id: { name: 'id' },
+      userId: { name: 'userId' },
+    }
+
+    const mockSchema = {
+      users: usersTable,
+      posts: postsTable,
+      postsRelations: {
+        config: ({ one }: { one: (table: unknown, opts: any) => unknown }) => ({
+          user: one(
+            { _: { name: 'users' } },
+            {
+              fields: [postsTable.userId],
+              references: [usersTable.id],
+            }
+          ),
+        }),
+      },
+    }
+
+    let postsWhereCalls = 0
+
+    const mockDb = {
+      select: () => ({
+        from: (table: unknown) => {
+          let whereCalls = 0
+          const query = {
+            where: () => {
+              whereCalls += 1
+              if (table === postsTable) {
+                postsWhereCalls = whereCalls
+              }
+              return query
+            },
+            limit: async () => {
+              if (table === usersTable) {
+                return [{ id: 'u1' }]
+              }
+              if (table === postsTable) {
+                // If resolveBindings calls where twice, this returns the wrong model.
+                return whereCalls > 1
+                  ? [{ id: 'p1', userId: 'u1' }]
+                  : [{ id: 'p2', userId: 'u1' }]
+              }
+              return []
+            },
+          }
+          return query
+        },
+      }),
+    }
+
+    app.use(
+      '*',
+      setupHonertia({
+        honertia: {
+          version: '1.0.0',
+          render: (page) => JSON.stringify(page),
+          database: () => mockDb,
+          schema: mockSchema,
+        },
+      })
+    )
+
+    effectRoutes(app).get(
+      '/users/{user}/posts/{post}',
+      Effect.gen(function* () {
+        const post = yield* bound('post')
+        return new Response((post as { id: string }).id)
+      })
+    )
+
+    const res = await app.request('/users/u1/posts/p2')
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('p2')
+    expect(postsWhereCalls).toBe(1)
+  })
+})
+
+describe('setupHonertia auth userKey configuration', () => {
+  test('custom userKey is respected by AuthUserService and shared auth props', async () => {
+    const app = new Hono<TestEnv>()
+
+    const getSessionCalls: string[] = []
+    const sessionCookie = 'custom_auth_cookie'
+
+    app.use(
+      '*',
+      setupHonertia({
+        honertia: {
+          version: '1.0.0',
+          render: (page) => JSON.stringify(page),
+          auth: () => ({
+            api: {
+              getSession: async ({ headers }: { headers: Headers }) => {
+                getSessionCalls.push(headers.get('cookie') ?? '')
+                return {
+                  user: {
+                    id: 'user-42',
+                    email: 'user42@example.com',
+                  },
+                  session: {
+                    id: 'session-42',
+                    userId: 'user-42',
+                  },
+                }
+              },
+            },
+          }),
+        },
+        auth: {
+          userKey: 'sessionUser',
+          sessionCookie,
+        },
+      })
+    )
+
+    effectRoutes(app).get(
+      '/me',
+      Effect.gen(function* () {
+        const authUser = yield* AuthUserService
+        const honertia = yield* HonertiaService
+        return yield* Effect.tryPromise(() =>
+          honertia.render('Auth/Me', {
+            userId: (authUser as any).user.id,
+          })
+        )
+      })
+    )
+
+    const res = await app.request('/me', {
+      headers: {
+        'X-Inertia': 'true',
+        'Cookie': `${sessionCookie}=abc123`,
+      },
+    })
+
+    expect(res.status).toBe(200)
+    const page = await res.json()
+    expect(page.props.userId).toBe('user-42')
+    expect(page.props.auth.user.id).toBe('user-42')
+    expect(getSessionCalls).toHaveLength(1)
+  })
+
+  test('loadUser skips Better Auth session lookup when configured cookie is missing', async () => {
+    const app = new Hono<TestEnv>()
+
+    let getSessionCalls = 0
+
+    app.use(
+      '*',
+      setupHonertia({
+        honertia: {
+          version: '1.0.0',
+          render: (page) => JSON.stringify(page),
+          auth: () => ({
+            api: {
+              getSession: async () => {
+                getSessionCalls += 1
+                return null
+              },
+            },
+          }),
+        },
+        auth: {
+          sessionCookie: 'custom_auth_cookie',
+        },
+      })
+    )
+
+    effectRoutes(app).get(
+      '/health',
+      Effect.succeed(new Response('ok'))
+    )
+
+    const res = await app.request('/health')
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('ok')
+    expect(getSessionCalls).toBe(0)
   })
 })
 

@@ -11,6 +11,9 @@
  * This approach minimizes file operations and context pollution for LLMs.
  */
 
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
+
 /**
  * HTTP methods supported for actions.
  */
@@ -236,6 +239,7 @@ function generateActionContent(options: GenerateActionOptions): string {
   const names = parseActionName(options.name)
   const fields = schema ? parseSchemaString(schema) : []
   const routeParams = extractRouteParams(path)
+  const isMutationMethod = method !== 'GET'
 
   const needsAuth = auth === 'required' || auth === 'optional'
   const needsValidation = fields.length > 0
@@ -246,9 +250,15 @@ function generateActionContent(options: GenerateActionOptions): string {
   if (needsValidation) effectImports.push('Schema as S')
 
   const honertiaImports = ['action']
+  if (isMutationMethod) {
+    honertiaImports.push('DatabaseService', 'dbMutation')
+  }
   if (needsAuth) honertiaImports.push('authorize')
   if (needsValidation) honertiaImports.push('validateRequest')
   if (needsBinding) honertiaImports.push('bound')
+  if (isMutationMethod && (needsValidation || needsAuth)) {
+    honertiaImports.push('asTrusted')
+  }
 
   // Add response helpers based on method
   if (method === 'GET') {
@@ -340,11 +350,6 @@ export const ${names.camelCase} = action(
 `
   }
 
-  // Add TODO placeholder
-  content += `
-    // TODO: Implement ${names.camelCase} logic
-`
-
   // Add return based on method
   if (method === 'GET') {
     const componentName = names.directory
@@ -352,12 +357,42 @@ export const ${names.camelCase} = action(
       : names.pascalCase
 
     content += `
+    // TODO: Implement ${names.camelCase} logic
+
     return yield* render('${componentName}', {
 ${needsBinding ? routeParams.map((p) => `      ${p},`).join('\n') + '\n' : ''}    })
 `
   } else {
     const redirectPath = names.directory ? `/${names.directory}` : '/'
+    const trustedFields: string[] = []
+    if (needsValidation) trustedFields.push('...input,')
+    if (needsAuth) trustedFields.push('userId: auth.user.id,')
+
+    if (trustedFields.length > 0) {
+      content += `
+    const trustedInput = asTrusted({
+${trustedFields.map((line) => `      ${line}`).join('\n')}
+    })
+`
+    }
+
     content += `
+    const db = yield* DatabaseService
+
+${trustedFields.length > 0
+  ? `    yield* dbMutation(db, trustedInput, async (tx, trustedInput) => {
+      // TODO: Replace with your Drizzle write.
+      // await tx.insert(schema.tableName).values(trustedInput)
+      void tx
+      void trustedInput
+    })
+`
+  : `    yield* dbMutation(db, async (tx) => {
+      // TODO: Replace with your Drizzle write.
+      // await tx.insert(schema.tableName).values(asTrusted({ ... }))
+      void tx
+    })
+`}
     return yield* redirect('${redirectPath}')
 `
   }
@@ -397,20 +432,55 @@ function generateInlineTests(
 if (typeof Bun !== 'undefined' && Bun.env?.NODE_ENV === 'test') {
   const { describe, test, expect } = await import('bun:test')
   const { Hono } = await import('hono')
-  const { effectRoutes, effectBridge, RouteRegistry } = await import('honertia/effect')
-  const { honertia } = await import('honertia')
+  const { effectRoutes, RouteRegistry } = await import('honertia/effect')
+  const { setupHonertia } = await import('honertia')
+
+  const sessionCookie = 'better-auth.session_token'
+  const sessionToken = 'test-session-token'
+
+  const buildHeaders = (
+    authenticated: boolean,
+    extra: Record<string, string> = {}
+  ): Record<string, string> => ({
+    ...(authenticated ? { Cookie: \`\${sessionCookie}=\${sessionToken}\` } : {}),
+    ...extra,
+  })
 
   // Create test app with this route
   const createTestApp = () => {
     const app = new Hono()
     const registry = new RouteRegistry()
 
-    app.use('*', honertia({
-      version: '1.0.0',
-      render: (page) => JSON.stringify(page),
-    }))
+    app.use('*', setupHonertia({
+      honertia: {
+        version: '1.0.0',
+        render: (page) => JSON.stringify(page),
+        auth: () => ({
+          api: {
+            getSession: async ({ headers }: { headers: Headers }) => {
+              const cookie = headers.get('cookie') ?? ''
+              if (!cookie.includes(\`\${sessionCookie}=\${sessionToken}\`)) {
+                return null
+              }
 
-    app.use('*', effectBridge())
+              return {
+                user: {
+                  id: 'test-user',
+                  email: 'test@example.com',
+                },
+                session: {
+                  id: 'test-session',
+                  userId: 'test-user',
+                },
+              }
+            },
+          },
+        }),
+      },
+      auth: {
+        sessionCookie,
+      },
+    }))
 
     effectRoutes(app, { registry })
       .${method.toLowerCase()}(route.path, ${names.camelCase}, { name: route.name })
@@ -442,10 +512,9 @@ ${needsValidation && method !== 'GET' ? `        headers: { 'Content-Type': 'app
     test('validates required fields', async () => {
       const res = await app.request('${options.path.replace(/\{[^}]+\}/g, 'test-id')}', {
         method: '${method}',
-        headers: {
+        headers: buildHeaders(${needsAuth ? 'true' : 'false'}, {
           'Content-Type': 'application/json',
-          'X-Test-User': JSON.stringify({ id: 'test-user', role: 'user' }),
-        },
+        }),
         body: JSON.stringify({}),
       })
 
@@ -460,9 +529,11 @@ ${needsValidation && method !== 'GET' ? `        headers: { 'Content-Type': 'app
     test('returns 404 for non-existent resource', async () => {
       const res = await app.request('${options.path.replace(/\{[^}]+\}/g, 'non-existent-id')}', {
         method: '${method}',
-        headers: {
-          'X-Test-User': JSON.stringify({ id: 'test-user', role: 'user' }),
-${needsValidation && method !== 'GET' ? `          'Content-Type': 'application/json',\n` : ''}        },
+        headers: buildHeaders(${needsAuth ? 'true' : 'false'}${
+      needsValidation && method !== 'GET'
+        ? `, {\n          'Content-Type': 'application/json',\n        }`
+        : ''
+    }),
 ${needsValidation && method !== 'GET' ? `        body: JSON.stringify({ ${fields.map((f) => `${f.name}: 'test'`).join(', ')} }),\n` : ''}      })
 
       expect(res.status).toBe(404)
@@ -475,12 +546,14 @@ ${needsValidation && method !== 'GET' ? `        body: JSON.stringify({ ${fields
     test('${method === 'GET' ? 'renders page' : 'processes request'} with valid data', async () => {
       const res = await app.request('${options.path.replace(/\{[^}]+\}/g, 'valid-id')}', {
         method: '${method}',
-        headers: {
-          'X-Test-User': JSON.stringify({ id: 'test-user', role: 'user' }),
-${needsValidation && method !== 'GET' ? `          'Content-Type': 'application/json',\n` : ''}        },
+        headers: buildHeaders(${needsAuth ? 'true' : 'false'}${
+    needsValidation && method !== 'GET'
+      ? `, {\n          'Content-Type': 'application/json',\n        }`
+      : ''
+  }),
 ${needsValidation && method !== 'GET' ? `        body: JSON.stringify({ ${fields.map((f) => `${f.name}: 'test value'`).join(', ')} }),\n` : ''}      })
 
-      expect(res.status).toBe(${method === 'GET' ? '200' : method === 'POST' ? '201' : '200'})
+      expect(res.status).toBe(${method === 'GET' ? '200' : '303'})
     })
 `
 
@@ -524,6 +597,15 @@ export function generateAction(options: GenerateActionOptions): GenerateActionRe
     routeName: names.routeName,
     written: false, // CLI will handle file writing
   }
+}
+
+function writeGeneratedFile(path: string, content: string, force = false): void {
+  if (existsSync(path) && !force) {
+    throw new Error(`File already exists: ${path}. Use --force to overwrite.`)
+  }
+
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, content, 'utf-8')
 }
 
 /**
@@ -703,12 +785,24 @@ export function runGenerateAction(args: string[]): void {
     preview: options.preview,
   })
 
+  let written = false
+  if (!options.preview) {
+    try {
+      writeGeneratedFile(result.path, result.content, options.force ?? false)
+      written = true
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error))
+      process.exit(1)
+    }
+  }
+
   if (options.json) {
     console.log(JSON.stringify({
       path: result.path,
       routeName: result.routeName,
       content: result.content,
       preview: options.preview ?? false,
+      written,
     }, null, 2))
     return
   }
@@ -720,7 +814,6 @@ export function runGenerateAction(args: string[]): void {
     return
   }
 
-  // File writing would be handled by the CLI runner
   console.log('Generated:', result.path)
   console.log(`  Route: ${result.routeName}`)
   console.log(`  Tests: ${options.skipTests ? 'skipped' : 'included (inline)'}`)
@@ -1123,6 +1216,20 @@ export function runGenerateCrud(args: string[]): void {
     preview: cliOptions.preview,
   })
 
+  let written = false
+  if (!cliOptions.preview) {
+    try {
+      for (const action of result.actions) {
+        writeGeneratedFile(action.path, action.content, cliOptions.force ?? false)
+      }
+      writeGeneratedFile(result.indexPath, result.indexContent, cliOptions.force ?? false)
+      written = true
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error))
+      process.exit(1)
+    }
+  }
+
   if (cliOptions.json) {
     console.log(JSON.stringify({
       resource: result.resource,
@@ -1135,6 +1242,7 @@ export function runGenerateCrud(args: string[]): void {
       })),
       indexContent: result.indexContent,
       preview: cliOptions.preview ?? false,
+      written,
     }, null, 2))
     return
   }

@@ -241,6 +241,8 @@ import {
   authorize,
   validateRequest,
   DatabaseService,
+  asTrusted,
+  dbMutation,
   redirect,
   requiredString,
   nullableString,
@@ -283,12 +285,13 @@ export const createProject = action(
 
     const db = yield* DatabaseService
 
-    const [project] = yield* Effect.tryPromise(() =>
-      db.insert(schema.projects).values({
+    const project = yield* dbMutation(db, async (tx) => {
+      const [created] = await tx.insert(schema.projects).values(asTrusted({
         ...input,
         userId: auth.user.id,
-      }).returning()
-    )
+      })).returning()
+      return created
+    })
 
     return yield* redirect(`/projects/${project.id}`)
   })
@@ -821,7 +824,8 @@ Handlers receive fully typed context:
 ```typescript
 // src/features/projects/handlers.ts
 import { Effect } from 'effect'
-import { action, DatabaseService, render, redirect } from 'honertia/effect'
+import { action, authorize, asTrusted, dbMutation, DatabaseService, render, redirect } from 'honertia/effect'
+import { eq, sql } from 'drizzle-orm'
 import { projectRoutes } from './routes'
 import { schema } from '~/db'
 
@@ -859,14 +863,15 @@ export const createProject = projectRoutes['projects.create'].handler(
     const db = yield* DatabaseService
 
     // ctx.body is Validated<CreateProject> - type-safe, validated
-    const [project] = yield* Effect.tryPromise(() =>
-      db.insert(schema.projects)
-        .values({
+    const project = yield* dbMutation(db, async (tx) => {
+      const [created] = await tx.insert(schema.projects)
+        .values(asTrusted({
           ...ctx.body,
           userId: ctx.user.user.id,
-        })
+        }))
         .returning()
-    )
+      return created
+    })
 
     // Return type must match ProjectResponseSchema
     return { project }
@@ -1126,9 +1131,9 @@ export const deleteProject = projectRoutes['projects.delete'].handler(
       )
     }
 
-    yield* Effect.tryPromise(() =>
-      db.delete(schema.projects).where(eq(schema.projects.id, project.id))
-    )
+    yield* dbMutation(db, async (tx) => {
+      await tx.delete(schema.projects).where(eq(schema.projects.id, project.id))
+    })
 
     return yield* redirect('/projects')
   })
@@ -1242,8 +1247,14 @@ const input = yield* validateRequest(CreateProjectSchema, {
 })
 // => Validated<{ name: string, description: string | null }>
 
-// Standalone validation (not tied to request)
-const data = yield* validate(schema, rawData)
+// Standalone validation for typed server-derived objects
+const txInput = yield* validate(CheckoutTransactionSchema, {
+  createOrder: { userId: auth.user.id, status: 'pending' },
+})
+// => Compile-time schema key checking + runtime validation
+
+// Standalone validation for unknown payloads (not tied to request, e.g. external JSON)
+const data = yield* validateUnknown(schema, rawData)
 // => Validated<T>
 
 // ═══════════════════════════════════════════════════════════════
@@ -1324,11 +1335,15 @@ export const createProject = action(
     })
     const db = yield* DatabaseService
 
-    yield* dbMutation(db, async (db) => {
-      await db.insert(projects).values({
+    const txInput = asTrusted({
+      createProject: {
         ...input,
         userId: auth.user.id,
-      })
+      },
+    })
+
+    yield* dbMutation(db, txInput, async (db, txInput) => {
+      await db.insert(projects).values(txInput.createProject)
     })
 
     return yield* redirect('/projects')
@@ -1469,7 +1484,7 @@ export const checkFeature = (flag: string) =>
 ```typescript
 // src/primitives/audit.ts
 import { Effect } from 'effect'
-import { DatabaseService, authorize } from 'honertia/effect'
+import { DatabaseService, asTrusted, authorize, dbMutation } from 'honertia/effect'
 import { schema } from '~/db'
 
 /**
@@ -1481,14 +1496,14 @@ export const audit = (event: string, metadata: Record<string, unknown> = {}) =>
     const auth = yield* authorize()
     const db = yield* DatabaseService
 
-    yield* Effect.tryPromise(() =>
-      db.insert(schema.auditLogs).values({
+    yield* dbMutation(db, async (tx) => {
+      await tx.insert(schema.auditLogs).values(asTrusted({
         event,
         userId: auth.user.id,
         metadata: JSON.stringify(metadata),
         timestamp: new Date(),
-      })
-    )
+      }))
+    })
   })
 
 // Usage: audit trail for sensitive operations
@@ -2571,8 +2586,10 @@ This applies to:
 
 Database mutations use Drizzle:
 ```typescript
-// Current: Direct mutations, no preview
-await db.insert(projects).values({ name: 'New Project' })
+// Current: Trusted mutation boundary, still no preview/rollback tooling
+yield* dbMutation(db, async (tx) => {
+  await tx.insert(projects).values(asTrusted({ name: 'New Project' }))
+})
 
 // Transactions for atomicity
 yield* dbTransaction(db, async (tx) => {
@@ -3166,6 +3183,7 @@ Generated pattern reference:
 | Pattern | Example | Description |
 |---------|---------|-------------|
 | `yield* DatabaseService` | - | Get database |
+| `yield* dbMutation(db, fn)` | - | Safe write boundary |
 | `yield* authorize()` | - | Require auth |
 | `yield* authorize(fn)` | `authorize(u => u.role === 'admin')` | Auth with check |
 | `yield* validateRequest(schema)` | - | Validate body |

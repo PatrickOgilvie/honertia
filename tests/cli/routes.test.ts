@@ -144,6 +144,13 @@ describe('routesCommand', () => {
       expect(result.routes.every((r) => r.fullPath.startsWith('/projects/:'))).toBe(true)
     })
 
+    test('handles invalid regex pattern without throwing', () => {
+      const result = routesCommand(registry, { pattern: '[' })
+
+      expect(result.count).toBe(0)
+      expect(result.error).toContain('Invalid route pattern')
+    })
+
     test('combines multiple filters', () => {
       const result = routesCommand(registry, {
         method: 'get',

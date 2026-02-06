@@ -5,6 +5,7 @@
 import { describe, test, expect } from 'bun:test'
 import {
   generateOpenApi,
+  formatOpenApiOutput,
   parseGenerateOpenApiArgs,
   generateOpenApiHelp,
   RouteRegistry,
@@ -390,6 +391,19 @@ describe('generateOpenApi', () => {
 
       expect(parsed.openapi).toBe('3.1.0')
     })
+
+    test('formats YAML output when requested', () => {
+      const registry = createTestRegistry()
+      const spec = generateOpenApi(registry, {
+        info: { title: 'Test API', version: '1.0.0' },
+      })
+
+      const yaml = formatOpenApiOutput(spec, 'yaml')
+
+      expect(yaml).toContain('openapi: 3.1.0')
+      expect(yaml).toContain('info:')
+      expect(yaml).toContain('paths:')
+    })
   })
 })
 
@@ -412,6 +426,11 @@ describe('parseGenerateOpenApiArgs', () => {
   test('parses --output option', () => {
     const options = parseGenerateOpenApiArgs(['--output', 'openapi.json'])
     expect(options.output).toBe('openapi.json')
+  })
+
+  test('parses --format option', () => {
+    const options = parseGenerateOpenApiArgs(['--format', 'yaml'])
+    expect(options.format).toBe('yaml')
   })
 
   test('parses -o shorthand', () => {

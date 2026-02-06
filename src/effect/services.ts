@@ -316,7 +316,11 @@ export interface CacheClient {
   get(key: string): Effect.Effect<string | null, CacheClientError>
   put(key: string, value: string, options?: { expirationTtl?: number }): Effect.Effect<void, CacheClientError>
   delete(key: string): Effect.Effect<void, CacheClientError>
-  list(options?: { prefix?: string }): Effect.Effect<{ keys: Array<{ name: string }> }, CacheClientError>
+  list(options?: { prefix?: string; cursor?: string }): Effect.Effect<{
+    keys: Array<{ name: string }>
+    list_complete: boolean
+    cursor?: string
+  }, CacheClientError>
 }
 
 /**

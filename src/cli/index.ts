@@ -66,6 +66,10 @@ export interface RoutesCommandResult {
    * Total count of routes.
    */
   count: number
+  /**
+   * Optional error when command options are invalid.
+   */
+  error?: string
 }
 
 /**
@@ -208,11 +212,17 @@ export function routesCommand(
     routes = routes.filter((r) => r.name === name)
   }
 
+  let patternError: string | undefined
   if (pattern) {
-    const regex = new RegExp(
-      pattern.replace(/\*/g, '.*').replace(/\{[^}]+\}/g, '[^/]+')
-    )
-    routes = routes.filter((r) => regex.test(r.fullPath))
+    try {
+      const regex = new RegExp(
+        pattern.replace(/\*/g, '.*').replace(/\{[^}]+\}/g, '[^/]+')
+      )
+      routes = routes.filter((r) => regex.test(r.fullPath))
+    } catch {
+      routes = []
+      patternError = `Invalid route pattern: ${pattern}`
+    }
   }
 
   // Sort routes
@@ -237,6 +247,7 @@ export function routesCommand(
     routes,
     output,
     count: routes.length,
+    error: patternError,
   }
 }
 
@@ -352,6 +363,10 @@ export function runRoutes(
 
   const options = parseRoutesArgs(args)
   const result = routesCommand(registry, options)
+  if (result.error) {
+    console.error(result.error)
+    process.exit(1)
+  }
   console.log(result.output)
 }
 
@@ -387,6 +402,9 @@ export {
 // Inline test runner generation
 export {
   generateInlineTestsRunner,
+  parseGenerateInlineTestsRunnerArgs,
+  generateInlineTestsRunnerHelp,
+  runGenerateInlineTestsRunner,
   type GenerateInlineTestsRunnerOptions,
   type GenerateInlineTestsRunnerResult,
 } from './inline-tests.js'
@@ -408,6 +426,7 @@ export {
 // OpenAPI generation
 export {
   generateOpenApi,
+  formatOpenApiOutput,
   parseGenerateOpenApiArgs,
   generateOpenApiHelp,
   runGenerateOpenApi,

@@ -4,6 +4,14 @@ Inertia.js adapter for Hono with Effect.ts. Server-driven app with SPA behavior.
 
 ## CLI Commands
 
+`honertia` is shipped as a package binary. You can run commands with:
+
+```bash
+bunx honertia <command>
+# or
+npx honertia <command>
+```
+
 ### Generate Action
 
 ```bash
@@ -117,8 +125,8 @@ honertia db status              # Show migration status
 honertia db status --json       # JSON output
 honertia db migrate             # Run pending migrations
 honertia db migrate --preview   # Preview SQL without executing
-honertia db rollback            # Rollback last migration
-honertia db rollback --preview  # Preview rollback SQL
+honertia db rollback --preview  # Preview rollback SQL for latest applied migration
+# Non-preview rollback execution is manual (run preview SQL yourself)
 honertia db generate add_email  # Generate new migration
 ```
 
@@ -979,6 +987,93 @@ export const destroyProject = action(
 )
 ```
 
+### Real-World Transaction (Order Checkout)
+
+Pass a validated/trusted transaction object as the second argument to
+`dbMutation`/`dbTransaction` when you want strict write scoping.
+Inside that callback, write methods only accept values that come from
+that scoped object.
+
+```typescript
+import { Effect, Schema as S } from 'effect'
+import {
+  action,
+  authorize,
+  validate,
+  validateRequest,
+  DatabaseService,
+  dbTransaction,
+  mergeMutationInput,
+  redirect,
+  requiredString,
+} from 'honertia/effect'
+import { eq } from 'drizzle-orm'
+import { orders, orderItems, inventory } from '~/db/schema'
+
+const CheckoutSchema = S.Struct({
+  productId: requiredString,
+  quantity: S.NumberFromString,
+})
+
+const CheckoutTransactionSchema = S.Struct({
+  createOrder: S.Struct({
+    userId: S.String,
+    status: S.Literal('pending'),
+  }),
+  createItem: S.Struct({
+    productId: S.String,
+    quantity: S.Number,
+    // Reserve transaction-derived fields you plan to fill later.
+    orderId: S.optional(S.String),
+  }),
+  updateInventory: S.Struct({
+    reserved: S.Number,
+  }),
+})
+
+export const checkout = action(
+  Effect.gen(function* () {
+    const auth = yield* authorize()
+    const input = yield* validateRequest(CheckoutSchema, {
+      errorComponent: 'Checkout/Show',
+    })
+    const db = yield* DatabaseService
+
+    const txInput = yield* validate(CheckoutTransactionSchema, {
+      createOrder: {
+        userId: auth.user.id,
+        status: 'pending',
+      },
+      createItem: {
+        productId: input.productId,
+        quantity: input.quantity,
+      },
+      updateInventory: {
+        reserved: input.quantity,
+      },
+    })
+    // For untyped/unknown payloads (e.g. external JSON), use validateUnknown(schema, raw)
+
+    const order = yield* dbTransaction(db, txInput, async (tx, scoped) => {
+      const [created] = await tx.insert(orders).values(scoped.createOrder).returning()
+
+      const itemInsert = mergeMutationInput(scoped.createItem, {
+        orderId: created.id,
+      })
+      await tx.insert(orderItems).values(itemInsert)
+
+      await tx.update(inventory)
+        .set(scoped.updateInventory)
+        .where(eq(inventory.productId, scoped.createItem.productId))
+
+      return created
+    })
+
+    return yield* redirect(`/orders/${order.id}`)
+  })
+)
+```
+
 ### API Endpoint (JSON Response)
 
 ```typescript
@@ -1819,7 +1914,8 @@ const handler = action(
     yield* cache.delete('my-key')
 
     // List keys by prefix
-    const keys = yield* cache.list({ prefix: 'user:' })
+    const page = yield* cache.list({ prefix: 'user:' })
+    const keys = page.keys
   })
 )
 ```
@@ -1857,7 +1953,10 @@ const createRedisCacheClient = (redisUrl: string): CacheClient => {
       Effect.tryPromise({
         try: async () => {
           const keys = await client.keys(options?.prefix ? `${options.prefix}*` : '*')
-          return { keys: keys.map((name) => ({ name })) }
+          return {
+            keys: keys.map((name) => ({ name })),
+            list_complete: true,
+          }
         },
         catch: (e) => new CacheClientError('Redis keys failed', e),
       }),
@@ -1907,6 +2006,7 @@ const makeTestCache = (): Layer.Layer<CacheService> => {
         keys: [...store.keys()]
           .filter((k) => !options?.prefix || k.startsWith(options.prefix))
           .map((name) => ({ name })),
+        list_complete: true,
       })),
   }
 
@@ -1988,7 +2088,7 @@ Recommended cache key patterns:
 
 ### Stale-While-Revalidate (SWR)
 
-The cache supports the stale-while-revalidate pattern for improved latency and resilience. When enabled, stale values are returned immediately while a background refresh is triggered.
+The cache supports the stale-while-revalidate pattern for improved latency and resilience. When enabled, stale values are returned immediately while a background refresh is triggered. In environments without `ExecutionContext`, stale entries are recomputed synchronously instead.
 
 ```typescript
 import { Effect, Duration } from 'effect'
@@ -2122,6 +2222,16 @@ export const dashboard = action(
 **Common use cases:**
 
 ```typescript
+import { Effect } from 'effect'
+import {
+  ExecutionContextService,
+  authorize,
+  DatabaseService,
+  dbMutation,
+  asTrusted,
+  BindingsService,
+} from 'honertia/effect'
+
 // Audit logging
 const auditLog = (action: string, details: Record<string, unknown>) =>
   Effect.gen(function* () {
@@ -2130,14 +2240,14 @@ const auditLog = (action: string, details: Record<string, unknown>) =>
     const db = yield* DatabaseService
 
     yield* ctx.runInBackground(
-      Effect.tryPromise(() =>
-        db.insert(auditLogs).values({
-          userId: user.id,
+      dbMutation(db, async (tx) => {
+        await tx.insert(auditLogs).values(asTrusted({
+          userId: user.user.id,
           action,
           details,
           timestamp: new Date(),
-        })
-      )
+        }))
+      })
     )
   })
 
@@ -2185,7 +2295,7 @@ const maybeNotifySlack = (message: string) =>
 **Important notes:**
 - Background tasks run after the response is sent to the user
 - Errors in background tasks are logged but don't crash the worker
-- In non-Worker environments (tests, local dev), `isAvailable` is `false` and tasks are skipped
+- In non-Worker environments (tests, local dev), `isAvailable` is `false` and stale entries are recomputed synchronously
 - Use `catchAll` to handle errors gracefully in background tasks
 
 ### Cache Key Versioning
@@ -2276,6 +2386,7 @@ import {
   authorize,
   cache,
   cacheInvalidate,
+  asTrusted,
   render,
   redirect,
   DatabaseService,
@@ -2331,7 +2442,7 @@ export const updateProfile = action(
 
     yield* dbMutation(db, async (db) => {
       await db.update(users)
-        .set({ name: input.name, bio: input.bio })
+        .set(asTrusted({ name: input.name, bio: input.bio }))
         .where(eq(users.id, auth.user.id))
     })
 

@@ -85,7 +85,9 @@ export {
 export {
   getValidationData,
   formatSchemaErrors,
+  createBodyParseValidationError,
   validate,
+  validateUnknown,
   validateRequest,
   asValidated,
   asTrusted,

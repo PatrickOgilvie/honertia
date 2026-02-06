@@ -5,6 +5,103 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.41] - 2026-02-06
+
+### Added
+
+- **`honertia` CLI binary**: The package now ships an executable. Run CLI commands directly via `bunx honertia <command>` or `npx honertia <command>`. Supports all subcommands (`routes`, `check`, `db:migrate`, `generate:action`, `generate:crud`, `generate:feature`, `generate:openapi`, `generate:tests-runner`) with grouped aliases (`honertia generate action` = `honertia generate:action`).
+  ```bash
+  bunx honertia routes --json
+  bunx honertia generate:action projects/create --method POST
+  bunx honertia db:migrate --preview
+  ```
+
+- **Scoped mutation input for `dbMutation` and `dbTransaction`**: New overloads that accept a `Validated<I> | Trusted<I>` input object. Inside the callback, database write methods only accept values carrying the matching scope brand, preventing accidental ad-hoc writes.
+  ```typescript
+  const txInput = asTrusted({
+    createProject: { name: input.name, userId: auth.user.id },
+  })
+
+  yield* dbMutation(db, txInput, async (db, scoped) => {
+    await db.insert(projects).values(scoped.createProject)
+  })
+  ```
+
+- **`mergeMutationInput` helper**: Merges additional fields (e.g., transaction-derived IDs) into a scoped mutation input while preserving its scope brand. Patch keys must already exist on the scoped input shape (enforced at compile time).
+  ```typescript
+  const itemInsert = mergeMutationInput(scoped.createItem, { orderId: created.id })
+  ```
+
+- **`MutationInput` type export**: The `MutationInput<Scope, A>` type is now exported from `honertia/effect` for explicit type annotations on scoped mutation objects.
+
+- **`validateUnknown` function**: New function for validating unknown/untyped data (external JSON, raw payloads). The original `validate` now enforces compile-time typed input (`data: I`), while `validateUnknown` accepts `data: unknown`.
+  ```typescript
+  // Typed -- compile-time check on field names
+  yield* validate(CheckoutSchema, { status: 'pending', quantity: '2' })
+
+  // Unknown -- for raw/external payloads
+  yield* validateUnknown(CheckoutSchema, someUnknownPayload)
+  ```
+
+- **`createBodyParseValidationError` export**: Constructs a detailed `ValidationError` for malformed request bodies with actionable hints and structured `fieldDetails`.
+
+- **OpenAPI YAML output format**: The `generate:openapi` command now supports `--format yaml`. New `formatOpenApiOutput(spec, format)` function exported from `honertia/cli`.
+  ```bash
+  honertia generate:openapi --output openapi.yaml --format yaml
+  ```
+
+- **CLI generators now write files to disk**: `generate:action`, `generate:crud`, `generate:feature`, `generate:openapi`, and `generate:tests-runner` now create files on disk instead of only printing output. Use `--force` to overwrite existing files.
+  ```bash
+  honertia generate:action projects/create --method POST --path /projects
+  honertia generate:action projects/create --force  # overwrite existing
+  ```
+
+- **`authUserKey` option in `EffectBridgeConfig`**: Specify which Hono context variable key holds the authenticated user instead of the hardcoded `'authUser'`.
+
+- **`loadUser` session cookie optimization**: The middleware now checks for the session cookie before calling `auth.api.getSession()`. If absent, the auth API call is skipped entirely.
+
+- **Migration `-- @down` marker support**: Migration SQL files can include a `-- @down` (or `-- down` or `-- rollback`) section. The CLI parses these into separate `upStatements` and `downStatements`.
+  ```sql
+  CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT);
+  -- @down
+  DROP TABLE users;
+  ```
+
+- **DB migration tracking via JSON file**: `dbMigrate` now persists applied migration state to `.honertia-applied.json` alongside migration files.
+
+### Changed
+
+- **BREAKING: `CacheClient.list` now supports cursor pagination metadata**: The `list` method now accepts an optional `cursor` and returns `{ keys, list_complete, cursor }` to align with paginated backends like Cloudflare KV. All custom `CacheClient` implementations must be updated.
+  ```typescript
+  list(options?: { prefix?: string; cursor?: string }): Effect.Effect<{
+    keys: Array<{ name: string }>
+    list_complete: boolean
+    cursor?: string
+  }, CacheClientError>
+  ```
+
+- **BREAKING: `validate` now enforces typed input**: The `data` parameter changed from `unknown` to `I` (the schema's encoded type). Code passing untyped data must switch to `validateUnknown`.
+
+- **SWR behavior in non-Worker environments**: When `ExecutionContextService.isAvailable` is `false`, stale entries within the SWR window are now recomputed synchronously instead of serving stale until SWR expiration.
+
+- **Code generators scaffold `dbMutation`/`asTrusted` for mutations**: `generate:action`, `generate:crud`, and `generate:feature` now produce proper mutation patterns with `dbMutation`, `asTrusted`, and `redirect` for non-GET methods.
+
+- **Generated inline tests use `setupHonertia` and cookie-based auth**: Tests now use the unified setup function and authenticate via session cookies instead of `X-Test-User` headers.
+
+- **`db rollback` is now preview-only**: Running without `--preview` prints an error directing users to run the SQL manually.
+
+- **`runGenerateOpenApi` is now async**: The function signature changed to `async function runGenerateOpenApi(...): Promise<void>`.
+
+### Fixed
+
+- **`cacheInvalidatePrefix` now invalidates across all pages**: Prefix invalidation now loops through paginated `list` results via cursor and deletes all matching keys, not just the first page.
+
+- **Body parse validation errors now include actionable hints**: The `ValidationError` for malformed request bodies includes descriptive hints and populates `fieldDetails` with structured information.
+
+- **Nested route model bindings use `and()` for compound where clauses**: Nested bindings (e.g., `/users/{user}/posts/{post}`) now use `and(eq(...), eq(...))` instead of chaining `.where()` calls, which in Drizzle replaces the previous condition.
+
+- **Invalid regex in routes command no longer throws**: Passing an invalid regex pattern to `routesCommand` now returns an empty result with an error message instead of an unhandled exception.
+
 ## [0.1.40] - 2026-01-30
 
 ### Added
