@@ -1295,6 +1295,30 @@ const input = yield* validateRequest(CreateEventSchema, {
 })
 ```
 
+### Request Input Sources
+
+`validateRequest(schema)` uses the legacy merge order by default:
+`params -> query -> body` (later sources win).
+
+Use `options.request` to switch behavior:
+
+```typescript
+// Laravel-style input (query + body; route params excluded)
+const input = yield* validateRequest(Schema, {
+  request: 'laravel',
+})
+
+// Custom merge order + conflict policy
+const input = yield* validateRequest(Schema, {
+  request: {
+    order: ['params', 'query', 'body'],
+    onConflict: 'error', // 'last-wins' | 'first-wins' | 'error'
+  },
+})
+```
+
+If both `profile` and `order` are provided, `order` takes precedence.
+
 ---
 
 ## Route Model Binding Examples

@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.42] - 2026-02-12
+
+### Added
+
+- **Request input source configuration for `validateRequest`**: New `request` option controls how request data is extracted and merged. Supports built-in profiles (`'legacy'`, `'laravel'`) and fine-grained control with custom merge order and conflict handling policies (`'last-wins'`, `'first-wins'`, `'error'`).
+  ```typescript
+  // Laravel-style: query + body only (route params excluded)
+  const input = yield* validateRequest(Schema, { request: 'laravel' })
+
+  // Custom merge order with conflict detection
+  const input = yield* validateRequest(Schema, {
+    request: {
+      order: ['params', 'query', 'body'],
+      onConflict: 'error',
+    },
+  })
+  ```
+
+- **Exported request validation types**: `RequestValidationSource`, `RequestValidationProfile`, `RequestValidationConflict`, `RequestValidationOptions`, and `RequestValidationConfig` are now exported from `honertia/effect` and `honertia`.
+
+### Changed
+
+- **JSON content type detection now supports `+json` suffixes**: Content types like `application/vnd.api+json` are now correctly parsed as JSON when extracting request body data.
+
 ## [0.1.41] - 2026-02-06
 
 ### Added

@@ -136,6 +136,11 @@ export {
   type Validated,
   type Trusted,
   type FormattedSchemaErrors,
+  type RequestValidationSource,
+  type RequestValidationProfile,
+  type RequestValidationConflict,
+  type RequestValidationOptions,
+  type RequestValidationConfig,
 } from './validation.js'
 
 // Validated Request Services

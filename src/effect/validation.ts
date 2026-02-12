@@ -10,6 +10,226 @@ import { ValidationError } from './errors.js'
 import type { FieldError } from './error-types.js'
 import { ErrorCodes, type ErrorCode } from './error-catalog.js'
 
+const BODYLESS_METHODS = new Set(['GET', 'HEAD'])
+
+/**
+ * Request data source for validateRequest input extraction.
+ */
+export type RequestValidationSource = 'params' | 'query' | 'body'
+
+/**
+ * Built-in request extraction profiles.
+ */
+export type RequestValidationProfile = 'legacy' | 'laravel'
+
+/**
+ * Conflict handling when multiple request sources provide the same key.
+ */
+export type RequestValidationConflict = 'last-wins' | 'first-wins' | 'error'
+
+/**
+ * Advanced request extraction options for validateRequest.
+ */
+export interface RequestValidationOptions {
+  /**
+   * Built-in extraction behavior profile.
+   * - legacy: params -> query -> body
+   * - laravel: query -> body
+   */
+  profile?: RequestValidationProfile
+
+  /**
+   * Merge order for request sources.
+   * Later sources override earlier ones when `onConflict` is `last-wins`.
+   */
+  order?: ReadonlyArray<RequestValidationSource>
+
+  /**
+   * How to resolve duplicate keys across sources.
+   */
+  onConflict?: RequestValidationConflict
+}
+
+/**
+ * Request extraction config accepted by validateRequest.
+ * Pass a profile string for quick setup or an object for full control.
+ */
+export type RequestValidationConfig =
+  | RequestValidationProfile
+  | RequestValidationOptions
+
+interface ResolvedRequestValidationOptions {
+  order: ReadonlyArray<RequestValidationSource>
+  onConflict: RequestValidationConflict
+}
+
+interface SourceConflict {
+  field: string
+  existingSource: RequestValidationSource
+  incomingSource: RequestValidationSource
+  existingValue: unknown
+  incomingValue: unknown
+}
+
+function getProfileOrder(profile: RequestValidationProfile): ReadonlyArray<RequestValidationSource> {
+  return profile === 'laravel'
+    ? ['query', 'body']
+    : ['params', 'query', 'body']
+}
+
+function normalizeRequestValidationOptions(
+  config?: RequestValidationConfig
+): ResolvedRequestValidationOptions {
+  const objectConfig =
+    typeof config === 'string'
+      ? { profile: config }
+      : (config ?? {})
+
+  const profile = objectConfig.profile ?? 'legacy'
+  const profileOrder = getProfileOrder(profile)
+  const seen = new Set<RequestValidationSource>()
+  const order = (objectConfig.order ?? profileOrder).filter((source) => {
+    if (seen.has(source)) return false
+    seen.add(source)
+    return true
+  })
+
+  return {
+    order,
+    onConflict: objectConfig.onConflict ?? 'last-wins',
+  }
+}
+
+function isJsonContentType(contentType: string): boolean {
+  const normalized = contentType.toLowerCase()
+  const mediaType = normalized.split(';')[0].trim()
+  return mediaType.endsWith('/json') || mediaType.endsWith('+json')
+}
+
+function createSourceConflictValidationError(
+  conflicts: ReadonlyArray<SourceConflict>,
+  component?: string
+): ValidationError {
+  const errors: Record<string, string> = {}
+  const fieldDetails: Record<string, FieldError> = {}
+
+  for (const conflict of conflicts) {
+    const message = `Conflicting values for ${conflict.field} from ${conflict.existingSource} and ${conflict.incomingSource}.`
+    errors[conflict.field] = message
+    fieldDetails[conflict.field] = {
+      value: {
+        [conflict.existingSource]: conflict.existingValue,
+        [conflict.incomingSource]: conflict.incomingValue,
+      },
+      expected: 'a single unambiguous value from request input',
+      message,
+      path: conflict.field.split('.'),
+      schemaType: 'RequestInput',
+    }
+  }
+
+  return new ValidationError({
+    errors,
+    fieldDetails,
+    component,
+    code: ErrorCodes.VAL_006_SOURCE_CONFLICT,
+  })
+}
+
+function mergeRequestSources(
+  orderedSources: ReadonlyArray<{
+    source: RequestValidationSource
+    data: Record<string, unknown>
+  }>,
+  onConflict: RequestValidationConflict,
+  component?: string
+): Effect.Effect<Record<string, unknown>, ValidationError, never> {
+  const merged: Record<string, unknown> = {}
+  const sourceOfKey = new Map<string, RequestValidationSource>()
+  const conflicts: SourceConflict[] = []
+
+  for (const { source, data } of orderedSources) {
+    for (const [key, value] of Object.entries(data)) {
+      if (!(key in merged)) {
+        merged[key] = value
+        sourceOfKey.set(key, source)
+        continue
+      }
+
+      if (onConflict === 'first-wins') {
+        continue
+      }
+
+      if (onConflict === 'last-wins') {
+        merged[key] = value
+        sourceOfKey.set(key, source)
+        continue
+      }
+
+      const existingValue = merged[key]
+      if (Object.is(existingValue, value)) {
+        continue
+      }
+
+      conflicts.push({
+        field: key,
+        existingSource: sourceOfKey.get(key) ?? source,
+        incomingSource: source,
+        existingValue,
+        incomingValue: value,
+      })
+    }
+  }
+
+  if (conflicts.length > 0) {
+    return Effect.fail(createSourceConflictValidationError(conflicts, component))
+  }
+
+  return Effect.succeed(merged)
+}
+
+function getValidationDataWithOptions(
+  config?: RequestValidationConfig,
+  errorComponent?: string
+): Effect.Effect<Record<string, unknown>, ValidationError, RequestService> {
+  return Effect.gen(function* () {
+    const request = yield* RequestService
+    const { order, onConflict } = normalizeRequestValidationOptions(config)
+
+    const routeParams = order.includes('params') ? request.params() : {}
+    const queryParams = order.includes('query') ? request.query() : {}
+
+    let body: Record<string, unknown> = {}
+    if (
+      order.includes('body') &&
+      !BODYLESS_METHODS.has(request.method.toUpperCase())
+    ) {
+      const contentType = request.header('Content-Type') ?? ''
+      const isJson = isJsonContentType(contentType)
+
+      body = yield* Effect.tryPromise(() =>
+        isJson ? request.json<Record<string, unknown>>() : request.parseBody()
+      ).pipe(
+        Effect.mapError((error) =>
+          createBodyParseValidationError(error, contentType)
+        )
+      )
+    }
+
+    const sourceData: Record<RequestValidationSource, Record<string, unknown>> = {
+      params: routeParams,
+      query: queryParams,
+      body,
+    }
+
+    return yield* mergeRequestSources(
+      order.map((source) => ({ source, data: sourceData[source] })),
+      onConflict,
+      errorComponent
+    )
+  })
+}
+
 /**
  * Extract validation data from the request.
  * Merges route params, query params, and body (body takes precedence).
@@ -18,30 +238,7 @@ export const getValidationData: Effect.Effect<
   Record<string, unknown>,
   ValidationError,
   RequestService
-> = Effect.gen(function* () {
-  const request = yield* RequestService
-
-  const routeParams = request.params()
-  const queryParams = request.query()
-
-  // Only parse body for methods that typically have one
-  if (['GET', 'HEAD'].includes(request.method.toUpperCase())) {
-    return { ...routeParams, ...queryParams }
-  }
-
-  const contentType = request.header('Content-Type') ?? ''
-  const isJson = contentType.includes('application/json')
-
-  const body = yield* Effect.tryPromise(() =>
-    isJson ? request.json<Record<string, unknown>>() : request.parseBody()
-  ).pipe(
-    Effect.mapError((error) =>
-      createBodyParseValidationError(error, contentType)
-    )
-  )
-
-  return { ...routeParams, ...queryParams, ...body }
-})
+> = getValidationDataWithOptions('legacy')
 
 /**
  * Result of formatting schema errors with details.
@@ -207,6 +404,13 @@ export interface ValidateOptions {
    * 'Projects/Create'
    */
   errorComponent?: string
+
+  /**
+   * Request extraction behavior for validateRequest.
+   * Pass a profile string ('legacy' | 'laravel') or an object
+   * with merge order and conflict policy controls.
+   */
+  request?: RequestValidationConfig
 }
 
 /**
@@ -216,7 +420,7 @@ export function createBodyParseValidationError(
   error: unknown,
   contentType: string
 ): ValidationError {
-  const isJson = contentType.includes('application/json')
+  const isJson = isJsonContentType(contentType)
   const reason = error instanceof Error ? error.message : String(error)
   const base = isJson ? 'Invalid JSON body' : 'Could not parse request body'
   const hint = isJson
@@ -314,7 +518,10 @@ export function validateRequest<A, I>(
   options: ValidateOptions = {}
 ): Effect.Effect<Validated<A>, ValidationError, RequestService> {
   return Effect.gen(function* () {
-    const data = yield* getValidationData
+    const data = yield* getValidationDataWithOptions(
+      options.request,
+      options.errorComponent
+    )
     return yield* validateUnknown(schema, data, options)
   })
 }

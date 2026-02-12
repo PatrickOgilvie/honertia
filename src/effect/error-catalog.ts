@@ -37,6 +37,7 @@ export const ErrorCodes = {
   VAL_003_BODY_PARSE_FAILED: 'HON_VAL_003_BODY_PARSE_FAILED',
   VAL_004_SCHEMA_MISMATCH: 'HON_VAL_004_SCHEMA_MISMATCH',
   VAL_005_TYPE_COERCION_FAILED: 'HON_VAL_005_TYPE_COERCION_FAILED',
+  VAL_006_SOURCE_CONFLICT: 'HON_VAL_006_SOURCE_CONFLICT',
 
   // Auth Errors (AUTH)
   AUTH_100_UNAUTHENTICATED: 'HON_AUTH_100_UNAUTHENTICATED',
@@ -293,7 +294,11 @@ export const ErrorCatalog: Record<ErrorCode, ErrorDefinition> = {
     httpStatus: 422,
     defaultFixes: [],
     docsPath: '/errors/validation/schema-mismatch',
-    related: [ErrorCodes.VAL_001_FIELD_REQUIRED, ErrorCodes.VAL_002_FIELD_INVALID],
+    related: [
+      ErrorCodes.VAL_001_FIELD_REQUIRED,
+      ErrorCodes.VAL_002_FIELD_INVALID,
+      ErrorCodes.VAL_006_SOURCE_CONFLICT,
+    ],
   },
 
   [ErrorCodes.VAL_005_TYPE_COERCION_FAILED]: {
@@ -306,6 +311,18 @@ export const ErrorCatalog: Record<ErrorCode, ErrorDefinition> = {
     defaultFixes: [],
     docsPath: '/errors/validation/type-coercion-failed',
     related: [ErrorCodes.VAL_002_FIELD_INVALID],
+  },
+
+  [ErrorCodes.VAL_006_SOURCE_CONFLICT]: {
+    code: ErrorCodes.VAL_006_SOURCE_CONFLICT,
+    tag: 'ValidationError',
+    category: 'validation',
+    title: 'Request Source Conflict',
+    messageTemplate: 'Conflicting values were provided for "{field}" across request sources.',
+    httpStatus: 422,
+    defaultFixes: [],
+    docsPath: '/errors/validation/source-conflict',
+    related: [ErrorCodes.VAL_004_SCHEMA_MISMATCH],
   },
 
   // Auth Errors

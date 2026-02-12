@@ -576,4 +576,197 @@ describe('validateRequest', () => {
       expect(exit.value.bio).toBeUndefined()
     }
   })
+
+  test('supports laravel profile that excludes route params', async () => {
+    const schema = S.Struct({
+      id: S.String,
+    })
+
+    const request = createMockRequest({
+      method: 'POST',
+      params: { id: '123' },
+      body: {},
+    })
+
+    const exit = await runWithRequestAsync(
+      validateRequest(schema, { request: 'laravel' }),
+      request
+    )
+
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit) && Cause.isFailure(exit.cause)) {
+      const option = Cause.failureOption(exit.cause)
+      if (option._tag === 'Some') {
+        const error = option.value as ValidationError
+        expect(error.errors.id).toBeDefined()
+      }
+    }
+  })
+
+  test('supports first-wins conflict handling with custom order', async () => {
+    const schema = S.Struct({
+      name: S.String,
+    })
+
+    const request = createMockRequest({
+      method: 'POST',
+      params: { name: 'from-params' },
+      query: { name: 'from-query' },
+      body: { name: 'from-body' },
+    })
+
+    const exit = await runWithRequestAsync(
+      validateRequest(schema, {
+        request: {
+          order: ['params', 'query', 'body'],
+          onConflict: 'first-wins',
+        },
+      }),
+      request
+    )
+
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      expect(exit.value.name).toBe('from-params')
+    }
+  })
+
+  test('custom order takes precedence over profile when both are provided', async () => {
+    const schema = S.Struct({
+      id: S.String,
+    })
+
+    const request = createMockRequest({
+      method: 'POST',
+      params: { id: '123' },
+      body: {},
+    })
+
+    const exit = await runWithRequestAsync(
+      validateRequest(schema, {
+        request: {
+          profile: 'laravel',
+          order: ['params', 'body'],
+        },
+      }),
+      request
+    )
+
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      expect(exit.value.id).toBe('123')
+    }
+  })
+
+  test('supports explicit last-wins conflict handling with custom order', async () => {
+    const schema = S.Struct({
+      name: S.String,
+    })
+
+    const request = createMockRequest({
+      method: 'POST',
+      params: { name: 'from-params' },
+      body: { name: 'from-body' },
+    })
+
+    const exit = await runWithRequestAsync(
+      validateRequest(schema, {
+        request: {
+          order: ['body', 'params'],
+          onConflict: 'last-wins',
+        },
+      }),
+      request
+    )
+
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      expect(exit.value.name).toBe('from-params')
+    }
+  })
+
+  test('can fail when request sources conflict', async () => {
+    const schema = S.Struct({
+      name: S.String,
+    })
+
+    const request = createMockRequest({
+      method: 'POST',
+      params: { name: 'from-params' },
+      body: { name: 'from-body' },
+    })
+
+    const exit = await runWithRequestAsync(
+      validateRequest(schema, {
+        request: {
+          order: ['params', 'body'],
+          onConflict: 'error',
+        },
+      }),
+      request
+    )
+
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit) && Cause.isFailure(exit.cause)) {
+      const option = Cause.failureOption(exit.cause)
+      if (option._tag === 'Some') {
+        const error = option.value as ValidationError
+        expect(error.errors.name).toContain('Conflicting values')
+        expect(error.code).toBe(ErrorCodes.VAL_006_SOURCE_CONFLICT)
+      }
+    }
+  })
+
+  test('treats +json content types as JSON parse failures', async () => {
+    const schema = S.Struct({ name: S.String })
+
+    const request: RequestContext = {
+      method: 'POST',
+      url: 'http://localhost/',
+      headers: new Headers({ 'Content-Type': 'application/vnd.api+json' }),
+      param: () => undefined,
+      params: () => ({}),
+      query: () => ({}),
+      json: async () => { throw new SyntaxError('Unexpected token') },
+      parseBody: async () => ({}),
+      header: (name: string) => name.toLowerCase() === 'content-type' ? 'application/vnd.api+json' : undefined,
+    }
+
+    const exit = await runWithRequestAsync(validateRequest(schema), request)
+
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit) && Cause.isFailure(exit.cause)) {
+      const option = Cause.failureOption(exit.cause)
+      if (option._tag === 'Some') {
+        const error = option.value as ValidationError
+        expect(error.errors.form).toContain('Invalid JSON body.')
+        expect(error.code).toBe(ErrorCodes.VAL_003_BODY_PARSE_FAILED)
+      }
+    }
+  })
+
+  test('does not treat application/json-seq as standard JSON media type', async () => {
+    const schema = S.Struct({
+      name: S.String,
+    })
+
+    const request: RequestContext = {
+      method: 'POST',
+      url: 'http://localhost/',
+      headers: new Headers({ 'Content-Type': 'application/json-seq' }),
+      param: () => undefined,
+      params: () => ({}),
+      query: () => ({}),
+      json: async () => { throw new Error('json parser should not be used') },
+      parseBody: async () => ({ name: 'from-parse-body' }),
+      header: (name: string) => name.toLowerCase() === 'content-type' ? 'application/json-seq' : undefined,
+    }
+
+    const exit = await runWithRequestAsync(validateRequest(schema), request)
+
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      expect(exit.value.name).toBe('from-parse-body')
+    }
+  })
 })
