@@ -304,6 +304,76 @@ describe('EffectRouteBuilder', () => {
       expect(await res.text()).toBe('Key: secret')
     })
 
+    test('supports context-aware layers that consume base services', async () => {
+      const app = createApp()
+
+      class SharedPropsReady extends Context.Tag('SharedPropsReady')<
+        SharedPropsReady,
+        { orgCount: number }
+      >() {}
+
+      const sharedPropsLayer = Layer.effect(
+        SharedPropsReady,
+        Effect.gen(function* () {
+          const db = yield* DatabaseService
+          const honertia = yield* HonertiaService
+          honertia.share('organizations', [{ id: 'org-1' }])
+          return { orgCount: typeof (db as { name?: unknown }).name === 'string' ? 1 : 0 }
+        })
+      )
+
+      effectRoutes(app)
+        .provide(sharedPropsLayer)
+        .get(
+          '/context-aware-provide',
+          Effect.gen(function* () {
+            const shared = yield* SharedPropsReady
+            const honertia = yield* HonertiaService
+            return yield* Effect.tryPromise(() =>
+              honertia.render('Dashboard', { orgCount: shared.orgCount })
+            )
+          })
+        )
+
+      const res = await app.request('/context-aware-provide')
+      const page = await res.json()
+
+      expect(page.component).toBe('Dashboard')
+      expect(page.props.orgCount).toBe(1)
+      expect(page.props.organizations).toEqual([{ id: 'org-1' }])
+    })
+
+    test('supports cross-layer dependencies (.provide(A).provide(B needing A))', async () => {
+      const app = createApp()
+
+      class ServiceA extends Context.Tag('CrossA')<ServiceA, { a: string }>() {}
+      class ServiceB extends Context.Tag('CrossB')<ServiceB, { derived: string }>() {}
+
+      const layerA = Layer.succeed(ServiceA, { a: 'hello' })
+      const layerB = Layer.effect(
+        ServiceB,
+        Effect.gen(function* () {
+          const a = yield* ServiceA
+          return { derived: a.a + '-world' }
+        })
+      )
+
+      effectRoutes(app)
+        .provide(layerA)
+        .provide(layerB)
+        .get(
+          '/cross-layer',
+          Effect.gen(function* () {
+            const b = yield* ServiceB
+            return new Response(b.derived)
+          })
+        )
+
+      const res = await app.request('/cross-layer')
+      expect(res.status).toBe(200)
+      expect(await res.text()).toBe('hello-world')
+    })
+
     test('provides multiple layers', async () => {
       const app = createApp()
 

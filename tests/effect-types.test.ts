@@ -3,12 +3,16 @@
  * If this file compiles, the types are correct.
  */
 
-import { Effect, Schema as S } from 'effect'
+import { Context, Effect, Layer, Schema as S } from 'effect'
 import { sqliteTable, text } from 'drizzle-orm/sqlite-core'
+import { Hono } from 'hono'
 import {
   DatabaseService,
   AuthService,
   AuthUserService,
+  HonertiaService,
+  effectRoutes,
+  RequireAuthLayer,
   bound,
   pluralize,
   asValidated,
@@ -158,6 +162,55 @@ const _testAuthUserService = Effect.gen(function* () {
   const _email: string = authUser.user.email
   return authUser
 })
+
+// ============================================================================
+// EffectRouteBuilder.provide() Type Tests
+// ============================================================================
+
+const _builderWithRequireAuthLayer = effectRoutes(new Hono()).provide(RequireAuthLayer)
+
+class SharedPropsService extends Context.Tag('SharedPropsService')<
+  SharedPropsService,
+  { ready: true }
+>() {}
+
+// Context-aware layer that depends on request-scoped base services.
+const SharePropsLayer = Layer.effect(
+  SharedPropsService,
+  Effect.gen(function* () {
+    const db = yield* DatabaseService
+    const honertia = yield* HonertiaService
+    honertia.share('authUserAvatarSeed', 'seed-123')
+    void db
+    return { ready: true as const }
+  })
+)
+
+const _builderWithContextAwareProvide = effectRoutes(new Hono()).provide(SharePropsLayer)
+
+// Cross-layer dependency: layerB depends on layerA's output (ProvidedServices).
+class CrossServiceA extends Context.Tag('CrossServiceA')<
+  CrossServiceA,
+  { val: string }
+>() {}
+
+class CrossServiceB extends Context.Tag('CrossServiceB')<
+  CrossServiceB,
+  { derived: string }
+>() {}
+
+const CrossLayerA = Layer.succeed(CrossServiceA, { val: 'hello' })
+const CrossLayerB = Layer.effect(
+  CrossServiceB,
+  Effect.gen(function* () {
+    const a = yield* CrossServiceA
+    return { derived: a.val + '-world' }
+  })
+)
+
+const _builderWithCrossLayerProvide = effectRoutes(new Hono())
+  .provide(CrossLayerA)
+  .provide(CrossLayerB)
 
 // ============================================================================
 // BoundModel Type Tests

@@ -174,10 +174,17 @@ export class EffectRouteBuilder<
 
   /**
    * Add a layer to provide services to all routes in this builder.
+   * The layer may be self-contained (`R = never`) or consume services already
+   * available in this route context (`BaseServices`, previously provided services,
+   * and bridge-level custom services).
    * The layer's error type must be handled by the effect bridge (AppError or subtype).
    */
-  provide<S, LayerErr extends AppError>(
-    layer: Layer.Layer<S, LayerErr, never>
+  provide<
+    S,
+    LayerErr extends AppError,
+    LayerReq extends BaseServices | ProvidedServices | CustomServices
+  >(
+    layer: Layer.Layer<S, LayerErr, LayerReq>
   ): EffectRouteBuilder<E, ProvidedServices | S, CustomServices> {
     return new EffectRouteBuilder(
       this.app,
@@ -458,7 +465,7 @@ export class EffectRouteBuilder<
         )
       }
       for (const layer of layers) {
-        fullLayer = Layer.merge(fullLayer, layer)
+        fullLayer = Layer.provideMerge(layer, fullLayer)
       }
 
       // Run the effect with the combined layer

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.43] - 2026-02-18
+
+### Changed
+
+- **`EffectRouteBuilder.provide()` now accepts context-aware layer requirements**: `provide()` can now take layers whose input environment depends on route context services (`BaseServices`), previously provided services, or bridge-level custom services. This aligns TypeScript with existing runtime behavior for patterns like global shared Inertia props.
+
+### Fixed
+
+- **`provide()` layer composition now resolves cross-layer dependencies**: Previously, `.provide(layerA).provide(layerB)` where `layerB` depends on `ServiceA` from `layerA` would type-check but fail at runtime with `Service not found`. The internal composition used `Layer.merge` (parallel, no dependency resolution) instead of `Layer.provideMerge` (sequential, feeds earlier outputs into later inputs). Layers provided via chained `.provide()` calls now correctly receive services from previously provided layers.
+
 ## [0.1.42] - 2026-02-12
 
 ### Added

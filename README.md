@@ -1605,6 +1605,34 @@ effectRoutes(app)
 - `.middleware()` adds Hono middleware that runs *before* the Effect handler (can redirect/short-circuit)
 - `.provide()` adds Effect layers that run *within* the Effect computation (dependency injection)
 
+### `provide()` Layer Patterns
+
+`provide()` supports two layer styles:
+
+1. **Self-contained layer** (`R = never`)
+   ```typescript
+   effectRoutes(app).provide(Layer.succeed(RequestIdService, { id: 'req-123' }))
+   ```
+2. **Context-aware layer** (consumes route context services like `DatabaseService`, `HonertiaService`, or previously provided services)
+   ```typescript
+   const SharePropsLayer = Layer.effectDiscard(
+     Effect.gen(function* () {
+       const db = yield* DatabaseService
+       const honertia = yield* HonertiaService
+       const organizations = yield* Effect.tryPromise(() =>
+         db.query.organizations.findMany()
+       )
+       honertia.share('organizations', organizations)
+       honertia.share('authUserAvatarSeed', 'seed-123')
+     })
+   )
+
+   effectRoutes(app)
+     .provide(RequireAuthLayer)
+     .provide(SharePropsLayer)
+     .get('/dashboard', showDashboard)
+   ```
+
 | Level | Method | Scope |
 |-------|--------|-------|
 | `app.use('*', ...)` | Global | All routes |
